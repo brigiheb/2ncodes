@@ -111,15 +111,37 @@ def get_all_demandes():
     ]), 200
 
 
-# ✅ 3. Approve or Reject a Demande Solde
+# ==========================
+# 🔧 Utility Functions
+# ==========================
+
+def validate_etat(etat):
+    if etat not in ["confirmé", "annulé"]:
+        return False, jsonify({"error": "Invalid state"}), 400
+    return True, None, None
+
+def verify_roles(approver, requester, etat, montant):
+    if approver.role == "manager" and requester.role == "admin":
+        return True, None
+    elif approver.role == "admin" and requester.role == "revendeur":
+        if etat == "confirmé" and montant > approver.solde:
+            return False, jsonify({"error": "Insufficient solde to approve this request."}), 400
+        return True, None
+    return False, jsonify({"error": "Unauthorized action"}), 403
+
+# ==========================
+# ✅ Route: Approve or Reject Demande
+# ==========================
+
 @demande_solde_bp.route('/update/<int:demande_id>', methods=['PUT'])
 @jwt_required()
 def update_demande(demande_id):
     data = request.get_json()
     etat = data.get('etat')
 
-    if etat not in ["confirmé", "annulé"]:
-        return jsonify({"error": "Invalid state"}), 400
+    valid, error_response, status_code = validate_etat(etat)
+    if not valid:
+        return error_response, status_code
 
     user_id = get_jwt_identity()
     approver = User.query.get(user_id)
@@ -134,67 +156,57 @@ def update_demande(demande_id):
     if not requester:
         return jsonify({"error": "Requester not found"}), 404
 
-    if approver.role == "manager" and requester.role == "admin":
-        pass
-    elif approver.role == "admin" and requester.role == "revendeur":
-        if etat == "confirmé" and demande.montant > approver.solde:
-            return jsonify({"error": "Insufficient solde to approve this request."}), 400
-    else:
-        return jsonify({"error": "Unauthorized action"}), 403
+    authorized, error_response = verify_roles(approver, requester, etat, demande.montant)
+    if not authorized:
+        return error_response
 
     demande.etat = etat
 
     if etat == "confirmé":
-        # 🔁 Solde transfer logic
         if approver.role == "admin" and requester.role == "revendeur":
             approver.solde -= demande.montant
             requester.solde += demande.montant
         elif approver.role == "manager" and requester.role == "admin":
             requester.solde += demande.montant
 
-        # ✅ Log transaction
         transaction_data = {
             "envoyee_par": approver.id,
             "recue_par": requester.id,
             "montant": demande.montant,
             "date_transaction": demande.date_demande,
-            "date_paiement": datetime.utcnow()
         }
 
-        if demande.preuve:
-            transaction = TransactionPaye(
-                preuve=demande.preuve,
-                etat="paye",
-                **transaction_data
-            )
-        else:
-            transaction = TransactionImpaye(
-                etat="impaye",
-                **transaction_data
-            )
-
+        transaction = (
+            TransactionPaye(preuve=demande.preuve, etat="paye", **transaction_data)
+            if demande.preuve else
+            TransactionImpaye(etat="impaye", **transaction_data)
+        )
         db.session.add(transaction)
 
-        # ✅ Emit socket event for confirmation
-        socketio.emit('demande_confirmee', {
-            "id": demande.id,
-            "montant": demande.montant,
-            "from": approver.nom,
-            "to": requester.nom,
-            "etat": "confirmé"
-        })
+        # ✅ Emit socket to requester if connected
+        requester_id_str = str(requester.id)
+        if requester_id_str in connected_users:
+            socketio.emit('demande_confirmee', {
+                "id": demande.id,
+                "montant": demande.montant,
+                "from": approver.nom,
+                "to": requester.nom,
+                "etat": "confirmé"
+            }, room=connected_users[requester_id_str])
 
     elif etat == "annulé":
-        # ✅ Emit socket event for cancellation
-        socketio.emit('demande_annulee', {
-            "id": demande.id,
-            "montant": demande.montant,
-            "from": approver.nom,
-            "to": requester.nom,
-            "etat": "annulé"
-        })
+        requester_id_str = str(requester.id)
+        if requester_id_str in connected_users:
+            socketio.emit('demande_annulee', {
+                "id": demande.id,
+                "montant": demande.montant,
+                "from": approver.nom,
+                "to": requester.nom,
+                "etat": "annulé"
+            }, room=connected_users[requester_id_str])
 
     db.session.commit()
+
     return jsonify({
         "message": f"Demande {etat} successfully",
         "updated_demande": demande.to_dict()
