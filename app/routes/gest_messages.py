@@ -22,6 +22,9 @@ def save_base64_file(base64_str, prefix, extension):
     return path
 
 # ===================== ADD MESSAGE ===================== #
+from app.routes.demande_solde import connected_users  # ✅ Reuse connected user tracking
+
+# ===================== ADD MESSAGE ===================== #
 @gest_message_bp.route('/add', methods=['POST'])
 @jwt_required()
 def add_message():
@@ -55,17 +58,88 @@ def add_message():
     db.session.add(new_msg)
     db.session.commit()
 
-    # ✅ Real-time socket notification
-    socketio.emit("new_message", {
+    payload = {
         "message_id": new_msg.id,
         "text": new_msg.text,
         "to": new_msg.to,
         "etat": new_msg.etat
-    })
+    }
+
+    # 🔁 Emit to all connected users by role
+    roles = ['admin', 'revendeur'] if to == 'all' else [to]
+    for role in roles:
+        users = User.query.filter_by(role=role).all()
+        for target in users:
+            sid = connected_users.get(str(target.id))
+            if sid:
+                socketio.emit("new_message", payload, room=sid)
 
     return jsonify(new_msg.to_dict()), 201
 
-# ===================== GET ALL MESSAGES (manager only) ===================== #
+# ===================== UPDATE MESSAGE ===================== #
+@gest_message_bp.route('/update/<int:id>', methods=['PUT'])
+@jwt_required()
+def update_message(id):
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    msg = GestMessage.query.get(id)
+
+    if not user or user.role != 'manager':
+        return jsonify({"error": "Only managers can update messages."}), 403
+    if not msg:
+        return jsonify({"error": "Message not found"}), 404
+
+    data = request.get_json()
+    msg.text = data.get('text', msg.text)
+    msg.to = data.get('to', msg.to)
+    msg.etat = data.get('etat', msg.etat)
+
+    db.session.commit()
+
+    payload = msg.to_dict()
+    target_roles = ['admin', 'revendeur'] if msg.to == 'all' else [msg.to]
+    for role in target_roles:
+        users = User.query.filter_by(role=role).all()
+        for target_user in users:
+            sid = connected_users.get(str(target_user.id))
+            if sid:
+                socketio.emit("message_updated", payload, room=sid)
+
+    return jsonify(payload), 200
+
+# ===================== DELETE MESSAGE ===================== #
+@gest_message_bp.route('/delete/<int:id>', methods=['DELETE'])
+@jwt_required()
+def delete_message(id):
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    msg = GestMessage.query.get(id)
+
+    if not user or user.role != 'manager':
+        return jsonify({"error": "Only managers can delete messages."}), 403
+    if not msg:
+        return jsonify({"error": "Message not found"}), 404
+
+    # 🗑️ Remove associated files if present
+    for path in [msg.img_path, msg.video_path, msg.file_path]:
+        if path and os.path.exists(path):
+            os.remove(path)
+
+    payload = {"message_id": msg.id}
+    target_roles = ['admin', 'revendeur'] if msg.to == 'all' else [msg.to]
+    for role in target_roles:
+        users = User.query.filter_by(role=role).all()
+        for target_user in users:
+            sid = connected_users.get(str(target_user.id))
+            if sid:
+                socketio.emit("message_deleted", payload, room=sid)
+
+    db.session.delete(msg)
+    db.session.commit()
+
+    return jsonify({"message": "Message deleted successfully ✅"}), 200
+
+# ===================== GET ALL MESSAGES (Manager only) ===================== #
 @gest_message_bp.route('/all_msg', methods=['GET'])
 @jwt_required()
 def get_all_messages_unfiltered():
@@ -94,50 +168,7 @@ def get_message(id):
 
     return jsonify(msg.to_dict()), 200
 
-# ===================== UPDATE MESSAGE ===================== #
-@gest_message_bp.route('/update/<int:id>', methods=['PUT'])
-@jwt_required()
-def update_message(id):
-    current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
-    msg = GestMessage.query.get(id)
-
-    if not user or user.role != 'manager':
-        return jsonify({"error": "Only managers can update messages."}), 403
-    if not msg:
-        return jsonify({"error": "Message not found"}), 404
-
-    data = request.get_json()
-
-    msg.text = data.get('text', msg.text)
-    msg.to = data.get('to', msg.to)
-    msg.etat = data.get('etat', msg.etat)
-
-    db.session.commit()
-    return jsonify(msg.to_dict()), 200
-
-# ===================== DELETE MESSAGE ===================== #
-@gest_message_bp.route('/delete/<int:id>', methods=['DELETE'])
-@jwt_required()
-def delete_message(id):
-    current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
-    msg = GestMessage.query.get(id)
-
-    if not user or user.role != 'manager':
-        return jsonify({"error": "Only managers can delete messages."}), 403
-    if not msg:
-        return jsonify({"error": "Message not found"}), 404
-
-    for path in [msg.img_path, msg.video_path, msg.file_path]:
-        if path and os.path.exists(path):
-            os.remove(path)
-
-    db.session.delete(msg)
-    db.session.commit()
-    return jsonify({"message": "Message deleted successfully ✅"}), 200
-
-# ===================== Get MESSAGE Admin ===================== #
+# ===================== GET Admin Messages ===================== #
 @gest_message_bp.route('/admin_messages', methods=['GET'])
 @jwt_required()
 def get_admin_messages():
@@ -154,7 +185,7 @@ def get_admin_messages():
 
     return jsonify([msg.to_dict() for msg in messages]), 200
 
-# ===================== Get MESSAGE Revendeur ===================== #
+# ===================== GET Revendeur Messages ===================== #
 @gest_message_bp.route('/revendeur_messages', methods=['GET'])
 @jwt_required()
 def get_revendeur_messages():

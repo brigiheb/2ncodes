@@ -9,6 +9,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import os
 
+from app.utils.socket_state import connected_users
+
 users_bp = Blueprint('users', __name__, url_prefix='/users')
 
 def save_user_photo(file, user_id):
@@ -494,3 +496,21 @@ def reset_password(user_id):
         "new_password": default_password,
         "access_token": access_token
     }), 200
+
+
+
+@users_bp.route('/connected', methods=['GET'])
+@jwt_required()
+def get_connected_users():
+    ids = list(connected_users.keys())
+    users = User.query.filter(User.id.in_(ids)).all()
+    return jsonify([
+        {
+            "id": user.id,
+            "nom": user.nom,
+            "email": user.email,
+            "role": user.role,
+            "photo": user.photo
+        }
+        for user in users
+    ]), 200

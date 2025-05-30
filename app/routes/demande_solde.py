@@ -7,13 +7,12 @@ from ..models.user import User
 from ..models.demande_solde import DemandeSolde
 from ..models.transaction_paye import TransactionPaye
 from ..models.transaction_impaye import TransactionImpaye
-from datetime import datetime
-from app import socketio  # ✅ Socket import
+from datetime import datetime, timedelta
+from app import socketio
+
+from app.utils.socket_state import connected_users
 
 demande_solde_bp = Blueprint('demande_solde', __name__, url_prefix='/demande_solde')
-
-# Track connected users
-connected_users = {}
 
 @socketio.on('connect')
 def handle_connect():
@@ -29,8 +28,65 @@ def handle_disconnect():
         del connected_users[user_id]
     print(f"User {user_id} disconnected")
 
+# ✅ New Socket: Real-time en cours count
+@socketio.on("get_en_cours_count")
+def socket_get_en_cours_count(data):
+    user_id = data.get("user_id")
+    user = User.query.get(user_id)
+    if user:
+        count = get_en_cours_count(user)
+        socketio.emit("en_cours_count", {"user_id": user_id, "count": count}, room=request.sid)
 
-# ✅ 1. Submit a Demande Solde
+# ✅ New Socket: Weekly confirmed/annulled demandes
+@socketio.on("get_weekly_confirmed_and_cancelled")
+def socket_get_weekly_updates(data):
+    user_id = data.get("user_id")
+    user = User.query.get(user_id)
+    if not user:
+        return
+
+    one_week_ago = datetime.utcnow() - timedelta(days=7)
+    demandes = []
+
+    if user.role == "manager":
+        demandes = DemandeSolde.query.join(User).filter(
+            User.role == "admin",
+            DemandeSolde.date_demande >= one_week_ago,
+            DemandeSolde.etat.in_(["confirmé", "annulé"])
+        ).all()
+    elif user.role == "admin":
+        demandes = DemandeSolde.query.join(User).filter(
+            User.role == "revendeur",
+            User.responsable == user.id,
+            DemandeSolde.date_demande >= one_week_ago,
+            DemandeSolde.etat.in_(["confirmé", "annulé"])
+        ).all()
+
+    confirmed = [d.to_dict() for d in demandes if d.etat == "confirmé"]
+    cancelled = [d.to_dict() for d in demandes if d.etat == "annulé"]
+
+    socketio.emit("weekly_confirmed_and_cancelled", {
+        "user_id": user_id,
+        "confirmed": confirmed,
+        "cancelled": cancelled
+    }, room=request.sid)
+
+# 🔧 Utility to get en cours count
+def get_en_cours_count(user):
+    if user.role == "manager":
+        return DemandeSolde.query.join(User).filter(
+            User.role == "admin",
+            DemandeSolde.etat == "en cours"
+        ).count()
+    elif user.role == "admin":
+        return DemandeSolde.query.join(User).filter(
+            User.role == "revendeur",
+            User.responsable == user.id,
+            DemandeSolde.etat == "en cours"
+        ).count()
+    return 0
+
+# ✅ 1. Submit Demande
 @demande_solde_bp.route('/add', methods=['POST'])
 @jwt_required()
 def create_demande_solde():
@@ -59,22 +115,27 @@ def create_demande_solde():
 
     db.session.commit()
 
-    # Enhanced emit with proper room targeting
     managers = User.query.filter_by(role='manager').all()
     for manager in managers:
-        if str(manager.id) in connected_users:
+        sid = connected_users.get(str(manager.id))
+        if sid:
             socketio.emit('new_demande_solde', {
                 "id": new_request.id,
                 "montant": montant,
                 "envoyee_par": user.nom,
                 "role": user.role,
                 "user_id": user.id
-            }, room=connected_users[str(manager.id)])
+            }, room=sid)
+
+            count = get_en_cours_count(manager)
+            socketio.emit("update_en_cours_count", {
+                "user_id": manager.id,
+                "count": count
+            }, room=sid)
 
     return jsonify(new_request.to_dict()), 201
 
-
-# ✅ 2. Get Demandes by Role
+# ✅ 2. Get Demandes
 @demande_solde_bp.route('/get', methods=['GET'])
 @jwt_required()
 def get_all_demandes():
@@ -84,21 +145,13 @@ def get_all_demandes():
         return jsonify({"error": "User not found"}), 404
 
     if user.role == "manager":
-        demandes = (
-            DemandeSolde.query
-            .join(User)
-            .filter(User.role == "admin")
-            .order_by(DemandeSolde.date_demande.desc())
-            .all()
-        )
+        demandes = DemandeSolde.query.join(User).filter(
+            User.role == "admin"
+        ).order_by(DemandeSolde.date_demande.desc()).all()
     elif user.role == "admin":
-        demandes = (
-            DemandeSolde.query
-            .join(User)
-            .filter(User.responsable == user.id)
-            .order_by(DemandeSolde.date_demande.desc())
-            .all()
-        )
+        demandes = DemandeSolde.query.join(User).filter(
+            User.responsable == user.id
+        ).order_by(DemandeSolde.date_demande.desc()).all()
     else:
         return jsonify({"error": "Unauthorized access"}), 403
 
@@ -110,11 +163,7 @@ def get_all_demandes():
         for demande in demandes
     ]), 200
 
-
-# ==========================
-# 🔧 Utility Functions
-# ==========================
-
+# ✅ Utility
 def validate_etat(etat):
     if etat not in ["confirmé", "annulé"]:
         return False, jsonify({"error": "Invalid state"}), 400
@@ -125,14 +174,11 @@ def verify_roles(approver, requester, etat, montant):
         return True, None
     elif approver.role == "admin" and requester.role == "revendeur":
         if etat == "confirmé" and montant > approver.solde:
-            return False, jsonify({"error": "Insufficient solde to approve this request."}), 400
+            return False, jsonify({"error": "Insufficient solde"}), 400
         return True, None
-    return False, jsonify({"error": "Unauthorized action"}), 403
+    return False, jsonify({"error": "Unauthorized"}), 403
 
-# ==========================
-# ✅ Route: Approve or Reject Demande
-# ==========================
-
+# ✅ 3. Update Demande
 @demande_solde_bp.route('/update/<int:demande_id>', methods=['PUT'])
 @jwt_required()
 def update_demande(demande_id):
@@ -169,43 +215,37 @@ def update_demande(demande_id):
         elif approver.role == "manager" and requester.role == "admin":
             requester.solde += demande.montant
 
-        transaction_data = {
+        tx_data = {
             "envoyee_par": approver.id,
             "recue_par": requester.id,
             "montant": demande.montant,
-            "date_transaction": demande.date_demande,
+            "date_transaction": demande.date_demande
         }
 
-        transaction = (
-            TransactionPaye(preuve=demande.preuve, etat="paye", **transaction_data)
+        tx = (
+            TransactionPaye(preuve=demande.preuve, etat="paye", **tx_data)
             if demande.preuve else
-            TransactionImpaye(etat="impaye", **transaction_data)
+            TransactionImpaye(etat="impaye", **tx_data)
         )
-        db.session.add(transaction)
-
-        # ✅ Emit socket to requester if connected
-        requester_id_str = str(requester.id)
-        if requester_id_str in connected_users:
-            socketio.emit('demande_confirmee', {
-                "id": demande.id,
-                "montant": demande.montant,
-                "from": approver.nom,
-                "to": requester.nom,
-                "etat": "confirmé"
-            }, room=connected_users[requester_id_str])
-
-    elif etat == "annulé":
-        requester_id_str = str(requester.id)
-        if requester_id_str in connected_users:
-            socketio.emit('demande_annulee', {
-                "id": demande.id,
-                "montant": demande.montant,
-                "from": approver.nom,
-                "to": requester.nom,
-                "etat": "annulé"
-            }, room=connected_users[requester_id_str])
+        db.session.add(tx)
 
     db.session.commit()
+
+    sid = connected_users.get(str(requester.id))
+    if sid:
+        socketio.emit(f"demande_{etat}", {
+            "id": demande.id,
+            "montant": demande.montant,
+            "from": approver.nom,
+            "to": requester.nom,
+            "etat": etat
+        }, room=sid)
+
+        count = get_en_cours_count(requester)
+        socketio.emit("update_en_cours_count", {
+            "user_id": requester.id,
+            "count": count
+        }, room=sid)
 
     return jsonify({
         "message": f"Demande {etat} successfully",
