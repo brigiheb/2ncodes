@@ -7,8 +7,9 @@ from ..models.product import Produit
 
 duree_avec_stock_bp = Blueprint('duree_avec_stock', __name__)
 
-# ? Function to calculate stock quantity from the Stock table
+# ===================== Helper ===================== #
 def get_stock_quantity(produit_id, duree):
+    """Count stock entries matching produit and duree."""
     return Stock.query.filter_by(produit_id=produit_id, duree=duree).count()
 
 # ===================== ADD DUREE AVEC STOCK ===================== #
@@ -24,14 +25,12 @@ def add_duree_avec_stock():
     prix_3 = data.get('prix_3')
     stock_minimale = data.get('stock_minimale')
     etat = data.get('etat', 'actif')
-    note = data.get('note', None)  # ? Optional note
+    note = data.get('note', None)
 
-    # Ensure product exists
     produit = Produit.query.get(produit_id)
     if not produit:
         return jsonify({"error": f"Produit with ID {produit_id} not found"}), 404
 
-    # Create new entry
     new_entry = DureeAvecStock(
         produit_id=produit_id,
         duree=duree,
@@ -44,34 +43,31 @@ def add_duree_avec_stock():
         note=note
     )
 
-    # ? Update Quantité before saving
     new_entry.update_quantite()
+    new_entry.update_moyenne()
 
     db.session.add(new_entry)
     db.session.commit()
 
     return jsonify(new_entry.to_dict()), 201
 
-# ===================== GET ALL DUREE AVEC STOCK ===================== #
+# ===================== GET ALL ===================== #
 @duree_avec_stock_bp.route('/get_all', methods=['GET'])
 def get_all_duree_avec_stock():
-    """Retrieve all DureeAvecStock records."""
     records = DureeAvecStock.query.all()
     return jsonify([record.to_dict() for record in records]), 200
 
-# ===================== GET SINGLE DUREE AVEC STOCK BY ID ===================== #
+# ===================== GET BY ID ===================== #
 @duree_avec_stock_bp.route('/get/<int:record_id>', methods=['GET'])
 def get_duree_avec_stock(record_id):
-    """Retrieve a single DureeAvecStock record by ID."""
     record = DureeAvecStock.query.get(record_id)
     if not record:
         return jsonify({"error": "Record not found"}), 404
     return jsonify(record.to_dict()), 200
 
-# ===================== UPDATE DUREE AVEC STOCK ===================== #
+# ===================== UPDATE ===================== #
 @duree_avec_stock_bp.route('/update/<int:record_id>', methods=['PUT'])
 def update_duree_avec_stock(record_id):
-    """Update an existing DureeAvecStock entry."""
     record = DureeAvecStock.query.get(record_id)
     if not record:
         return jsonify({"error": "Record not found"}), 404
@@ -87,16 +83,15 @@ def update_duree_avec_stock(record_id):
     record.etat = data.get('etat', record.etat)
     record.note = data.get('note', record.note)
 
-    # Auto-update "Quantité" based on current stock
     record.quantite = get_stock_quantity(record.produit_id, record.duree)
+    record.update_moyenne()
 
     db.session.commit()
     return jsonify(record.to_dict()), 200
 
-# ===================== DELETE DUREE AVEC STOCK ===================== #
+# ===================== DELETE ===================== #
 @duree_avec_stock_bp.route('/delete/<int:record_id>', methods=['DELETE'])
 def delete_duree_avec_stock(record_id):
-    """Delete a DureeAvecStock entry."""
     record = DureeAvecStock.query.get(record_id)
     if not record:
         return jsonify({"error": "Record not found"}), 404
@@ -104,3 +99,14 @@ def delete_duree_avec_stock(record_id):
     db.session.delete(record)
     db.session.commit()
     return jsonify({"message": "Record deleted successfully"}), 200
+
+# ===================== RECALCULATE MOYENNE FOR ALL ===================== #
+@duree_avec_stock_bp.route('/recalculate_moyenne_all', methods=['POST'])
+def recalculate_all_moyenne():
+    """Recalculate moyenne and quantite for all existing records."""
+    records = DureeAvecStock.query.all()
+    for record in records:
+        record.update_quantite()
+        record.update_moyenne()
+    db.session.commit()
+    return jsonify({"message": "Moyenne and quantite recalculated for all entries"}), 200

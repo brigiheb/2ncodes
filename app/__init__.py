@@ -10,7 +10,7 @@ import os
 db = SQLAlchemy()
 migrate = Migrate()
 jwt = JWTManager()
-socketio = SocketIO(cors_allowed_origins="*",async_mode='eventlet', logger=True,engineio_logger=True)  
+socketio = SocketIO(cors_allowed_origins="*", async_mode='eventlet', logger=True, engineio_logger=True)
 
 def create_app():
     load_dotenv()
@@ -18,7 +18,12 @@ def create_app():
     app.config.from_object('app.config.config.Config')
 
     # CORS for frontend origins
-    CORS(app, origins=["http://95.216.112.177:5555", "http://95.216.112.177:82"], supports_credentials=True)
+    CORS(app, origins=[
+        "http://95.216.112.177:5555",
+        "http://95.216.112.177:82",
+        "http://95.216.112.177:83",
+        "http://localhost:3000"
+    ], supports_credentials=True)
 
     # Initialize extensions
     db.init_app(app)
@@ -36,6 +41,7 @@ def create_app():
     from app.models.transaction_paye import TransactionPaye
     from app.models.transaction_impaye import TransactionImpaye
     from app.models.visible_item import VisibleItem
+    from app.models.historique import Historique   # ✅ Add this line
 
     # Import routes
     from app.routes.categories import categories_bp
@@ -52,6 +58,7 @@ def create_app():
     from app.routes.gest_messages import gest_message_bp
     from app.routes.transaction import transactions_bp
     from app.routes.visible_items import visible_bp
+    # from app.routes.historique import historique_bp  # ✅ Uncomment once you create the routes
 
     # Register blueprints
     app.register_blueprint(gest_message_bp, url_prefix='/api/gest_message')
@@ -68,5 +75,6 @@ def create_app():
     app.register_blueprint(users_bp, url_prefix='/api/users')
     app.register_blueprint(transactions_bp, url_prefix='/api/transactions')
     app.register_blueprint(visible_bp, url_prefix='/api/visible_items')
+    # app.register_blueprint(historique_bp, url_prefix='/api/historique')  # ✅ Enable once route is ready
 
     return app

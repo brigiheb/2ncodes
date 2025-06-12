@@ -1,28 +1,16 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from werkzeug.utils import secure_filename
 import os
-import base64
-from datetime import datetime
 from .. import db
 from ..models.gest_message import GestMessage
 from ..models.user import User
 from app import socketio
+from app.routes.demande_solde import connected_users
 
 gest_message_bp = Blueprint('gest_message', __name__, url_prefix='/api/gest_message')
 
-UPLOAD_FOLDER = 'static/messages/'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# Utility to save a base64-encoded file
-def save_base64_file(base64_str, prefix, extension):
-    filename = f"{prefix}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.{extension}"
-    path = os.path.join(UPLOAD_FOLDER, filename)
-    with open(path, "wb") as f:
-        f.write(base64.b64decode(base64_str))
-    return path
-
-# ===================== ADD MESSAGE ===================== #
-from app.routes.demande_solde import connected_users  # ✅ Reuse connected user tracking
+UPLOAD_FOLDER = os.path.join('static', 'messages')
 
 # ===================== ADD MESSAGE ===================== #
 @gest_message_bp.route('/add', methods=['POST'])
@@ -34,28 +22,51 @@ def add_message():
     if not user or user.role != "manager":
         return jsonify({"error": "Only managers can add messages."}), 403
 
-    data = request.get_json()
-    text = data.get('text')
-    to = data.get('to')
-    etat = data.get('etat', 'afficher')
-
-    img_path = data.get('img_path')
-    video_path = data.get('video_path')
-    file_path = data.get('file_path')
+    text = request.form.get('text')
+    to = request.form.get('to')
+    etat = request.form.get('etat', 'afficher')
 
     if not text or to not in ['admin', 'revendeur', 'all']:
         return jsonify({"error": "Missing 'text' or invalid 'to' value."}), 400
 
-    new_msg = GestMessage(
-        text=text,
-        to=to,
-        etat=etat,
-        img_path=img_path,
-        video_path=video_path,
-        file_path=file_path
-    )
-
+    new_msg = GestMessage(text=text, to=to, etat=etat)
     db.session.add(new_msg)
+    db.session.flush()  # Get new_msg.id before saving files
+
+    folder = os.path.join(current_app.root_path, UPLOAD_FOLDER)
+    os.makedirs(folder, exist_ok=True)
+
+    # Handle image upload
+    img_file = request.files.get('img')
+    if img_file and img_file.filename:
+        img_filename = secure_filename(f"{new_msg.id}.png")
+        img_path = os.path.join(folder, img_filename)
+        if os.path.exists(img_path):
+            os.remove(img_path)
+        img_file.save(img_path)
+        new_msg.img_path = os.path.relpath(img_path, current_app.root_path)
+
+    # Handle video upload
+    video_file = request.files.get('video')
+    if video_file and video_file.filename:
+        video_filename = secure_filename(f"{new_msg.id}.mp4")
+        video_path = os.path.join(folder, video_filename)
+        if os.path.exists(video_path):
+            os.remove(video_path)
+        video_file.save(video_path)
+        new_msg.video_path = os.path.relpath(video_path, current_app.root_path)
+
+    # Handle file upload
+    file_file = request.files.get('file')
+    if file_file and file_file.filename:
+        ext = os.path.splitext(file_file.filename)[-1]
+        file_filename = secure_filename(f"{new_msg.id}{ext}")
+        file_path = os.path.join(folder, file_filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        file_file.save(file_path)
+        new_msg.file_path = os.path.relpath(file_path, current_app.root_path)
+
     db.session.commit()
 
     payload = {
@@ -65,7 +76,6 @@ def add_message():
         "etat": new_msg.etat
     }
 
-    # 🔁 Emit to all connected users by role
     roles = ['admin', 'revendeur'] if to == 'all' else [to]
     for role in roles:
         users = User.query.filter_by(role=role).all()
@@ -89,10 +99,43 @@ def update_message(id):
     if not msg:
         return jsonify({"error": "Message not found"}), 404
 
-    data = request.get_json()
-    msg.text = data.get('text', msg.text)
-    msg.to = data.get('to', msg.to)
-    msg.etat = data.get('etat', msg.etat)
+    msg.text = request.form.get('text', msg.text)
+    msg.to = request.form.get('to', msg.to)
+    msg.etat = request.form.get('etat', msg.etat)
+
+    folder = os.path.join(current_app.root_path, UPLOAD_FOLDER)
+    os.makedirs(folder, exist_ok=True)
+
+    # Update image
+    img_file = request.files.get('img')
+    if img_file and img_file.filename:
+        img_filename = secure_filename(f"{msg.id}.png")
+        img_path = os.path.join(folder, img_filename)
+        if os.path.exists(img_path):
+            os.remove(img_path)
+        img_file.save(img_path)
+        msg.img_path = os.path.relpath(img_path, current_app.root_path)
+
+    # Update video
+    video_file = request.files.get('video')
+    if video_file and video_file.filename:
+        video_filename = secure_filename(f"{msg.id}.mp4")
+        video_path = os.path.join(folder, video_filename)
+        if os.path.exists(video_path):
+            os.remove(video_path)
+        video_file.save(video_path)
+        msg.video_path = os.path.relpath(video_path, current_app.root_path)
+
+    # Update general file
+    file_file = request.files.get('file')
+    if file_file and file_file.filename:
+        ext = os.path.splitext(file_file.filename)[-1]
+        file_filename = secure_filename(f"{msg.id}{ext}")
+        file_path = os.path.join(folder, file_filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        file_file.save(file_path)
+        msg.file_path = os.path.relpath(file_path, current_app.root_path)
 
     db.session.commit()
 

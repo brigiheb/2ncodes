@@ -65,8 +65,29 @@ def add_sous_category():
         return jsonify({"error": "Database error", "details": str(e)}), 500
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
+        
 
+@sous_categories_bp.route('/get_sous_categories_by_category/<int:category_id>', methods=['GET'])
+def get_sous_categories_by_category(category_id):
+    """Retrieve all sous categories for a specific category ID."""
+    try:
+        # First verify the category exists
+        category = Category.query.get(category_id)
+        if not category:
+            return jsonify({"message": "Category not found"}), 404
 
+        # Get all sous-categories for this category
+        sous_categories = SousCategory.query.filter_by(category_id=category_id).all()
+        
+        result = [sc.to_dict() for sc in sous_categories]
+        return jsonify({
+            "category_id": category_id,
+            "category_name": category.nom,
+            "sous_categories": result
+        })
+    except Exception as e:
+        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
+    
 @sous_categories_bp.route('/get_sous_categories', methods=['GET'])
 def get_all_sous_categories():
     """Retrieve all sous categories."""
