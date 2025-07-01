@@ -65,39 +65,67 @@ def add_sous_category():
         return jsonify({"error": "Database error", "details": str(e)}), 500
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
-        
 
-@sous_categories_bp.route('/get_sous_categories_by_category/<int:category_id>', methods=['GET'])
-def get_sous_categories_by_category(category_id):
-    """Retrieve all sous categories for a specific category ID."""
-    try:
-        # First verify the category exists
-        category = Category.query.get(category_id)
-        if not category:
-            return jsonify({"message": "Category not found"}), 404
-
-        # Get all sous-categories for this category
-        sous_categories = SousCategory.query.filter_by(category_id=category_id).all()
-        
-        result = [sc.to_dict() for sc in sous_categories]
-        return jsonify({
-            "category_id": category_id,
-            "category_name": category.nom,
-            "sous_categories": result
-        })
-    except Exception as e:
-        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
-    
 @sous_categories_bp.route('/get_sous_categories', methods=['GET'])
 def get_all_sous_categories():
-    """Retrieve all sous categories."""
+    """
+    Retrieve sous categories with optional pagination, filtering, and search.
+    Search includes SousCategory.name, SousCategory.etat, and Category.nom.
+    Returns all sous categories if no pagination parameters are provided.
+    """
     try:
-        sous_categories = SousCategory.query.all()
-        result = [sc.to_dict() for sc in sous_categories]
-        return jsonify(result)
+        search_query = request.args.get('search', type=str, default="").strip().lower()
+        page = request.args.get('page', type=int, default=None)
+        per_page = request.args.get('per_page', type=int, default=None)
+        filters = {
+            key: value for key, value in request.args.items()
+            if key not in ['search', 'page', 'per_page']
+        }
+
+        # Base query with join to Category
+        query = SousCategory.query.join(Category, SousCategory.category_id == Category.id)
+
+        # Apply filters (e.g., ?etat=actif, ?category_id=1)
+        for field, value in filters.items():
+            if field == 'category_id' and value.isdigit():
+                query = query.filter(SousCategory.category_id == int(value))
+            elif hasattr(SousCategory, field):
+                query = query.filter(getattr(SousCategory, field).ilike(f"%{value}%"))
+
+        # Apply search on SousCategory.name, SousCategory.etat, and Category.nom
+        if search_query:
+            query = query.filter(
+                db.or_(
+                    SousCategory.name.ilike(f"%{search_query}%"),
+                    SousCategory.etat.ilike(f"%{search_query}%"),
+                    Category.nom.ilike(f"%{search_query}%")
+                )
+            )
+
+        # If no pagination parameters are provided, return all results
+        if page is None and per_page is None:
+            sous_categories = query.order_by(SousCategory.id.desc()).all()
+            return jsonify({
+                "total": len(sous_categories),
+                "sous_categories": [sc.to_dict() for sc in sous_categories]
+            }), 200
+
+        # Apply pagination if parameters are provided
+        per_page = per_page or 20  # Default to 20 if not specified
+        page = page or 1           # Default to 1 if not specified
+        paginated = query.order_by(SousCategory.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
+        sous_categories = paginated.items
+
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": paginated.total,
+            "pages": paginated.pages,
+            "sous_categories": [sc.to_dict() for sc in sous_categories]
+        }), 200
+
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
-
 
 @sous_categories_bp.route('/get_sous_category/<int:id>', methods=['GET'])
 def get_sous_category_by_id(id):
@@ -109,8 +137,6 @@ def get_sous_category_by_id(id):
         return jsonify({"message": "SousCategory not found"}), 404
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
-
-
 
 @sous_categories_bp.route('/update_sous_category/<int:id>', methods=['PUT'])
 def update_sous_category(id):
@@ -156,26 +182,34 @@ def update_sous_category(id):
         return jsonify({
             "message": "SousCategory updated successfully",
             "sous_category": sous_category.to_dict()
-        })
+        }), 200
     except SQLAlchemyError as e:
         db.session.rollback()
         return jsonify({"error": "Database error", "details": str(e)}), 500
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
 
-
 @sous_categories_bp.route('/delete_sous_category/<int:id>', methods=['DELETE'])
 def delete_sous_category(id):
-    """Delete a sous category."""
+    """Delete a sous category and its associated image if exists."""
     try:
         sous_category = SousCategory.query.get(id)
         if not sous_category:
             return jsonify({"message": "SousCategory not found"}), 404
-        
+
+        # Delete associated image if it exists
+        if sous_category.photo:
+            photo_path = os.path.join(current_app.root_path, sous_category.photo)
+            if os.path.isfile(photo_path):
+                try:
+                    os.remove(photo_path)
+                except Exception as e:
+                    print(f"[WARNING] Failed to delete image: {e}")
+
         db.session.delete(sous_category)
         db.session.commit()
         
-        return jsonify({"message": "SousCategory deleted successfully"})
+        return jsonify({"message": "SousCategory deleted successfully"}), 200
     except SQLAlchemyError as e:
         db.session.rollback()
         return jsonify({"error": "Database error", "details": str(e)}), 500

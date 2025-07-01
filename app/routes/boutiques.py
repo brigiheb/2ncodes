@@ -12,10 +12,62 @@ boutiques_bp = Blueprint('boutiques', __name__, url_prefix='/boutiques')
 
 @boutiques_bp.route('/get_boutiques', methods=['GET'])
 def get_all_boutiques():
-    """Get all boutiques."""
-    boutiques = Boutique.query.all()
-    return jsonify([boutique.to_dict() for boutique in boutiques]), 200
+    """
+    Retrieve boutiques, sorted by ID descending, with optional filtering, search, and pagination.
+    If page and per_page are not provided, return all boutiques without pagination.
+    """
+    try:
+        search_query = request.args.get('search', type=str, default="").strip().lower()
+        page = request.args.get('page', type=int, default=None)
+        per_page = request.args.get('per_page', type=int, default=None)
 
+        # Collect filters (excluding 'search', 'page', and 'per_page')
+        filters = {
+            key: value for key, value in request.args.items()
+            if key not in ['search', 'page', 'per_page']
+        }
+
+        query = Boutique.query
+
+        # Apply filters
+        for field, value in filters.items():
+            if hasattr(Boutique, field):
+                query = query.filter(getattr(Boutique, field).like(f"%{value}%"))
+
+        # Apply search (on nom)
+        if search_query:
+            query = query.filter(
+                Boutique.nom.ilike(f"%{search_query}%")
+            )
+
+        # Apply descending sort
+        query = query.order_by(Boutique.id.desc())
+
+        # If page or per_page is not provided, return all boutiques
+        if page is None or per_page is None:
+            boutiques = query.all()
+            return jsonify({
+                "page": 1,  # Default for non-paginated response
+                "per_page": len(boutiques),  # Total count for non-paginated
+                "total": len(boutiques),
+                "pages": 1,
+                "boutiques": [boutique.to_dict() for boutique in boutiques]
+            }), 200
+
+        # Apply pagination
+        paginated = query.paginate(page=page, per_page=per_page, error_out=False)
+        boutiques = paginated.items
+
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": paginated.total,
+            "pages": paginated.pages,
+            "boutiques": [boutique.to_dict() for boutique in boutiques]
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
 
 @boutiques_bp.route('/get_boutique/<int:boutique_id>', methods=['GET'])
 def get_boutique(boutique_id):

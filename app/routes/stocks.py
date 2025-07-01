@@ -8,9 +8,39 @@ stocks_bp = Blueprint('stocks', __name__)
 
 @stocks_bp.route('/get_stocks', methods=['GET'])
 def get_all_stocks():
-    """Get all stocks."""
-    stocks = Stock.query.all()
-    return jsonify([stock.to_dict() for stock in stocks]), 200
+    """Get all stocks with pagination, search """
+    try:
+        search_query = request.args.get('search', type=str, default="").strip().lower()
+        page = request.args.get('page', type=int, default=1)
+        per_page = 20
+
+        query = db.session.query(Stock).join(Produit)
+
+        if search_query:
+            query = query.filter(
+                db.or_(
+                    Produit.name.ilike(f"%{search_query}%"),
+                    Stock.fournisseur.ilike(f"%{search_query}%"),
+                    Stock.code.ilike(f"%{search_query}%"),
+                    Stock.note.ilike(f"%{search_query}%"),
+                    Stock.duree.ilike(f"%{search_query}%"),
+                    Stock.prix_achat.ilike(f"%{search_query}%")
+                )
+            )
+
+
+        paginated = query.order_by(Stock.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
+        stocks = paginated.items
+
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": paginated.total,
+            "pages": paginated.pages,
+            "stocks": [stock.to_dict() for stock in stocks]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
 
 @stocks_bp.route('/get_stock/<int:stock_id>', methods=['GET'])
 def get_stock(stock_id):

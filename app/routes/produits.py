@@ -8,10 +8,11 @@ from ..models.duree_avec_stock import DureeAvecStock
 import os
 from flask import current_app
 from werkzeug.utils import secure_filename
+from sqlalchemy.sql import func, asc, desc
+from sqlalchemy import case
 
 products_bp = Blueprint('products', __name__)
 
-# Create a new product
 @products_bp.route('/add_product', methods=['POST'])
 def add_product():
     try:
@@ -23,12 +24,10 @@ def add_product():
         etat_commande = request.form.get('etat_commande', 'instantané')
         photo_file = request.files.get('photo')
 
-        # Validate category
         category = Category.query.get(category_id)
         if not category:
             return jsonify({"message": "Category not found"}), 404
 
-        # Validate sous-category if provided
         sous_category = SousCategory.query.get(sous_category_id) if sous_category_id else None
 
         new_product = Produit(
@@ -41,16 +40,13 @@ def add_product():
         )
 
         db.session.add(new_product)
-        db.session.flush()  # Get new_product.id before commit
+        db.session.flush()
 
-        # Handle photo upload
         if photo_file and photo_file.filename:
             folder = os.path.join(current_app.root_path, 'static', 'products_images')
             os.makedirs(folder, exist_ok=True)
-
             filename = f"{new_product.id}.png"
             save_path = os.path.join(folder, secure_filename(filename))
-
             if os.path.exists(save_path):
                 os.remove(save_path)
             photo_file.save(save_path)
@@ -67,18 +63,20 @@ def add_product():
 
 @products_bp.route('/get_products', methods=['GET'])
 def get_all_products():
+    """Retrieve all products with pagination, filtering, and sorting."""
     try:
-        # Get optional query parameters
-        name = request.args.get('name')
-        category_id = request.args.get('category_id')
-        sous_category_id = request.args.get('sous_category_id')
-        etat = request.args.get('etat')
+        search = request.args.get('search', type=str, default="").strip()
+        category_id = request.args.get('category_id', type=int)
+        sous_category_id = request.args.get('sous_category_id', type=int)
+        etat = request.args.get('etat', type=str)
+        page = request.args.get('page', type=int, default=1)
+        per_page = request.args.get('per_page', type=int, default=20)
+        sort = request.args.get('sort', type=str, default='latest')
 
-        # Start building the query
         query = Produit.query
 
-        if name:
-            query = query.filter(Produit.name.ilike(f'%{name}%'))
+        if search:
+            query = query.filter(Produit.name.ilike(f'%{search}%'))
         if category_id:
             query = query.filter(Produit.category_id == category_id)
         if sous_category_id:
@@ -86,30 +84,130 @@ def get_all_products():
         if etat:
             query = query.filter(Produit.etat == etat)
 
-        products = query.all()
+        # Apply sorting
+        if sort == 'price_asc':
+            query = query.outerjoin(DureeAvecStock).order_by(
+                case(
+                    (DureeAvecStock.prix_1.is_(None), 1),
+                    else_=0
+                ).desc(),  # NULLs last
+                DureeAvecStock.prix_1.asc(),
+                Produit.id.asc()  # Secondary sort for stability
+            )
+        elif sort == 'price_desc':
+            query = query.outerjoin(DureeAvecStock).order_by(
+                case(
+                    (DureeAvecStock.prix_1.is_(None), 1),
+                    else_=0
+                ).asc(),  # NULLs first
+                DureeAvecStock.prix_1.desc(),
+                Produit.id.asc()  # Secondary sort for stability
+            )
+        else:  # latest
+            query = query.order_by(Produit.id.desc())
+
+        # Log the query for debugging
+        print("SQL Query:", str(query))
+
+        paginated = query.paginate(page=page, per_page=per_page, error_out=False)
+        products = paginated.items
+
+        # Log results for debugging
         result = []
         for product in products:
             product_data = product.to_dict()
             product_data["duree_avec_stock"] = [d.to_dict() for d in product.duree_avec_stock]
             result.append(product_data)
+        print("Products:", [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "prix_1": p["duree_avec_stock"][0]["prix_1"] if p["duree_avec_stock"] else None
+            } for p in result
+        ])
 
-        return jsonify(result), 200
-
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": paginated.total,
+            "pages": paginated.pages,
+            "records": result
+        }), 200
     except Exception as e:
+        print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
 
-# Get a product by ID
-@products_bp.route('/get_product/<int:id>', methods=['GET'])
-def get_product_by_id(id):
+@products_bp.route('/get_products_by_sous_category/<int:sous_category_id>', methods=['GET'])
+def get_products_by_sous_category(sous_category_id):
+    """Retrieve products by sous-category ID with pagination, optional search, and sorting."""
     try:
-        product = Produit.query.get(id)
-        if product:
-            return jsonify(product.to_dict()), 200
-        return jsonify({"message": "Product not found"}), 404
+        sous_category = SousCategory.query.get(sous_category_id)
+        if not sous_category:
+            return jsonify({"message": "Sous-category not found"}), 404
+
+        search = request.args.get('search', type=str, default="").strip()
+        page = request.args.get('page', type=int, default=1)
+        per_page = request.args.get('per_page', type=int, default=20)
+        sort = request.args.get('sort', type=str, default='latest')
+
+        query = Produit.query.filter(Produit.sous_category_id == sous_category_id)
+
+        if search:
+            query = query.filter(Produit.name.ilike(f'%{search}%'))
+
+        # Apply sorting
+        if sort == 'price_asc':
+            query = query.outerjoin(DureeAvecStock).order_by(
+                case(
+                    (DureeAvecStock.prix_1.is_(None), 1),
+                    else_=0
+                ).desc(),  # NULLs last
+                DureeAvecStock.prix_1.asc(),
+                Produit.id.asc()  # Secondary sort for stability
+            )
+        elif sort == 'price_desc':
+            query = query.outerjoin(DureeAvecStock).order_by(
+                case(
+                    (DureeAvecStock.prix_1.is_(None), 1),
+                    else_=0
+                ).asc(),  # NULLs first
+                DureeAvecStock.prix_1.desc(),
+                Produit.id.asc()  # Secondary sort for stability
+            )
+        else:  # latest
+            query = query.order_by(Produit.id.desc())
+
+        # Log the query for debugging
+        print("SQL Query:", str(query))
+
+        paginated = query.paginate(page=page, per_page=per_page, error_out=False)
+        products = paginated.items
+
+        # Log results for debugging
+        result = []
+        for product in products:
+            product_data = product.to_dict()
+            product_data["duree_avec_stock"] = [d.to_dict() for d in product.duree_avec_stock]
+            result.append(product_data)
+        print("Products:", [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "prix_1": p["duree_avec_stock"][0]["prix_1"] if p["duree_avec_stock"] else None
+            } for p in result
+        ])
+
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": paginated.total,
+            "pages": paginated.pages,
+            "records": result
+        }), 200
     except Exception as e:
+        print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
 
-# Update a product
 @products_bp.route('/update_product/<int:id>', methods=['PUT'])
 def update_product(id):
     try:
@@ -135,10 +233,8 @@ def update_product(id):
         if photo_file and photo_file.filename:
             folder = os.path.join(current_app.root_path, 'static', 'products_images')
             os.makedirs(folder, exist_ok=True)
-
             filename = f"{product.id}.png"
             save_path = os.path.join(folder, secure_filename(filename))
-
             if os.path.exists(save_path):
                 os.remove(save_path)
             photo_file.save(save_path)
@@ -153,7 +249,6 @@ def update_product(id):
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
 
-# Delete a product
 @products_bp.route('/delete_product/<int:id>', methods=['DELETE'])
 def delete_product(id):
     try:

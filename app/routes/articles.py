@@ -9,9 +9,51 @@ articles_bp = Blueprint('articles', __name__, url_prefix='/articles')
 
 @articles_bp.route('/get_articles', methods=['GET'])
 def get_all_articles():
-    """Retrieve all articles."""
-    articles = Article.query.all()
-    return jsonify([article.to_dict() for article in articles]), 200
+    """
+    Retrieve paginated articles, sorted by ID descending,
+    with optional filtering and search.
+    """
+    try:
+        search_query = request.args.get('search', type=str, default="").strip().lower()
+        page = request.args.get('page', type=int, default=1)
+        per_page = request.args.get('per_page', type=int, default=20)  # Use query param
+
+        # Collect filters (exclude 'search', 'page', 'per_page')
+        filters = {
+            key: value for key, value in request.args.items()
+            if key not in ['search', 'page', 'per_page']
+        }
+
+        query = Article.query
+
+        # Apply filters
+        for field, value in filters.items():
+            if hasattr(Article, field):
+                query = query.filter(getattr(Article, field).like(f"%{value}%"))
+
+        # Apply search
+        if search_query:
+            query = query.filter(
+                db.or_(
+                    Article.nom.ilike(f"%{search_query}%"),
+                    Article.description.ilike(f"%{search_query}%")
+                )
+            )
+
+        # Apply sorting and pagination
+        paginated = query.order_by(Article.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
+        articles = paginated.items
+
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": paginated.total,
+            "pages": paginated.pages,
+            "articles": [article.to_dict() for article in articles]
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
 
 @articles_bp.route('/get_article/<int:article_id>', methods=['GET'])
 def get_article(article_id):

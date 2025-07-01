@@ -7,10 +7,9 @@ from ..models.gest_message import GestMessage
 from ..models.user import User
 from app import socketio
 from app.routes.demande_solde import connected_users
+from sqlalchemy import or_
 
 gest_message_bp = Blueprint('gest_message', __name__, url_prefix='/api/gest_message')
-
-UPLOAD_FOLDER = os.path.join('static', 'messages')
 
 # ===================== ADD MESSAGE ===================== #
 @gest_message_bp.route('/add', methods=['POST'])
@@ -33,57 +32,19 @@ def add_message():
     db.session.add(new_msg)
     db.session.flush()  # Get new_msg.id before saving files
 
-    folder = os.path.join(current_app.root_path, UPLOAD_FOLDER)
+    folder = os.path.join(current_app.root_path, 'static', 'messages')
     os.makedirs(folder, exist_ok=True)
 
-    # Handle image upload
     img_file = request.files.get('img')
     if img_file and img_file.filename:
-        img_filename = secure_filename(f"{new_msg.id}.png")
-        img_path = os.path.join(folder, img_filename)
-        if os.path.exists(img_path):
-            os.remove(img_path)
-        img_file.save(img_path)
-        new_msg.img_path = os.path.relpath(img_path, current_app.root_path)
-
-    # Handle video upload
-    video_file = request.files.get('video')
-    if video_file and video_file.filename:
-        video_filename = secure_filename(f"{new_msg.id}.mp4")
-        video_path = os.path.join(folder, video_filename)
-        if os.path.exists(video_path):
-            os.remove(video_path)
-        video_file.save(video_path)
-        new_msg.video_path = os.path.relpath(video_path, current_app.root_path)
-
-    # Handle file upload
-    file_file = request.files.get('file')
-    if file_file and file_file.filename:
-        ext = os.path.splitext(file_file.filename)[-1]
-        file_filename = secure_filename(f"{new_msg.id}{ext}")
-        file_path = os.path.join(folder, file_filename)
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        file_file.save(file_path)
-        new_msg.file_path = os.path.relpath(file_path, current_app.root_path)
+        filename = f"{new_msg.id}.png"
+        save_path = os.path.join(folder, filename)
+        if os.path.exists(save_path):
+            os.remove(save_path)
+        img_file.save(save_path)
+        new_msg.img_path = os.path.relpath(save_path, current_app.root_path)
 
     db.session.commit()
-
-    payload = {
-        "message_id": new_msg.id,
-        "text": new_msg.text,
-        "to": new_msg.to,
-        "etat": new_msg.etat
-    }
-
-    roles = ['admin', 'revendeur'] if to == 'all' else [to]
-    for role in roles:
-        users = User.query.filter_by(role=role).all()
-        for target in users:
-            sid = connected_users.get(str(target.id))
-            if sid:
-                socketio.emit("new_message", payload, room=sid)
-
     return jsonify(new_msg.to_dict()), 201
 
 # ===================== UPDATE MESSAGE ===================== #
@@ -103,52 +64,20 @@ def update_message(id):
     msg.to = request.form.get('to', msg.to)
     msg.etat = request.form.get('etat', msg.etat)
 
-    folder = os.path.join(current_app.root_path, UPLOAD_FOLDER)
+    folder = os.path.join(current_app.root_path, 'static', 'messages')
     os.makedirs(folder, exist_ok=True)
 
-    # Update image
     img_file = request.files.get('img')
     if img_file and img_file.filename:
-        img_filename = secure_filename(f"{msg.id}.png")
-        img_path = os.path.join(folder, img_filename)
-        if os.path.exists(img_path):
-            os.remove(img_path)
-        img_file.save(img_path)
-        msg.img_path = os.path.relpath(img_path, current_app.root_path)
-
-    # Update video
-    video_file = request.files.get('video')
-    if video_file and video_file.filename:
-        video_filename = secure_filename(f"{msg.id}.mp4")
-        video_path = os.path.join(folder, video_filename)
-        if os.path.exists(video_path):
-            os.remove(video_path)
-        video_file.save(video_path)
-        msg.video_path = os.path.relpath(video_path, current_app.root_path)
-
-    # Update general file
-    file_file = request.files.get('file')
-    if file_file and file_file.filename:
-        ext = os.path.splitext(file_file.filename)[-1]
-        file_filename = secure_filename(f"{msg.id}{ext}")
-        file_path = os.path.join(folder, file_filename)
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        file_file.save(file_path)
-        msg.file_path = os.path.relpath(file_path, current_app.root_path)
+        filename = f"{msg.id}.png"
+        save_path = os.path.join(folder, filename)
+        if os.path.exists(save_path):
+            os.remove(save_path)
+        img_file.save(save_path)
+        msg.img_path = os.path.relpath(save_path, current_app.root_path)
 
     db.session.commit()
-
-    payload = msg.to_dict()
-    target_roles = ['admin', 'revendeur'] if msg.to == 'all' else [msg.to]
-    for role in target_roles:
-        users = User.query.filter_by(role=role).all()
-        for target_user in users:
-            sid = connected_users.get(str(target_user.id))
-            if sid:
-                socketio.emit("message_updated", payload, room=sid)
-
-    return jsonify(payload), 200
+    return jsonify(msg.to_dict()), 200
 
 # ===================== DELETE MESSAGE ===================== #
 @gest_message_bp.route('/delete/<int:id>', methods=['DELETE'])
@@ -192,8 +121,29 @@ def get_all_messages_unfiltered():
     if not user or user.role != 'manager':
         return jsonify({"error": "Only managers can view all messages."}), 403
 
-    messages = GestMessage.query.all()
-    return jsonify([msg.to_dict() for msg in messages]), 200
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    search = request.args.get('search', '', type=str).strip()
+    to = request.args.get('to', None, type=str)
+
+    query = GestMessage.query
+
+    if search:
+        query = query.filter(GestMessage.text.ilike(f'%{search}%'))
+    
+    if to and to in ['admin', 'revendeur', 'all']:
+        query = query.filter(GestMessage.to == to)
+
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+    messages = pagination.items
+
+    return jsonify({
+        'messages': [msg.to_dict() for msg in messages],
+        'total': pagination.total,
+        'page': page,
+        'per_page': per_page,
+        'total_pages': pagination.pages
+    }), 200
 
 # ===================== GET ONE MESSAGE ===================== #
 @gest_message_bp.route('/<int:id>', methods=['GET'])
@@ -221,12 +171,28 @@ def get_admin_messages():
     if not user or user.role != "admin":
         return jsonify({"error": "Access restricted to admins only."}), 403
 
-    messages = GestMessage.query.filter(
-        (GestMessage.to == 'admin') | (GestMessage.to == 'all'),
-        GestMessage.etat == 'afficher'
-    ).all()
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    search = request.args.get('search', '', type=str).strip()
 
-    return jsonify([msg.to_dict() for msg in messages]), 200
+    query = GestMessage.query.filter(
+        or_(GestMessage.to == 'admin', GestMessage.to == 'all'),
+        GestMessage.etat == 'afficher'
+    )
+
+    if search:
+        query = query.filter(GestMessage.text.ilike(f'%{search}%'))
+
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+    messages = pagination.items
+
+    return jsonify({
+        'messages': [msg.to_dict() for msg in messages],
+        'total': pagination.total,
+        'page': page,
+        'per_page': per_page,
+        'total_pages': pagination.pages
+    }), 200
 
 # ===================== GET Revendeur Messages ===================== #
 @gest_message_bp.route('/revendeur_messages', methods=['GET'])
@@ -238,9 +204,25 @@ def get_revendeur_messages():
     if not user or user.role != "revendeur":
         return jsonify({"error": "Access restricted to revendeurs only."}), 403
 
-    messages = GestMessage.query.filter(
-        (GestMessage.to == 'revendeur') | (GestMessage.to == 'all'),
-        GestMessage.etat == 'afficher'
-    ).all()
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    search = request.args.get('search', '', type=str).strip()
 
-    return jsonify([msg.to_dict() for msg in messages]), 200
+    query = GestMessage.query.filter(
+        or_(GestMessage.to == 'revendeur', GestMessage.to == 'all'),
+        GestMessage.etat == 'afficher'
+    )
+
+    if search:
+        query = query.filter(GestMessage.text.ilike(f'%{search}%'))
+
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+    messages = pagination.items
+
+    return jsonify({
+        'messages': [msg.to_dict() for msg in messages],
+        'total': pagination.total,
+        'page': page,
+        'per_page': per_page,
+        'total_pages': pagination.pages
+    }), 200

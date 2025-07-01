@@ -94,6 +94,7 @@ def add_manager():
     nom = request.form.get('nom')
     email = request.form.get('email')
     telephone = request.form.get('telephone')
+    solde = request.form.get('solde')
     password = "123456"
     photo_file = request.files.get('photo')
 
@@ -107,7 +108,7 @@ def add_manager():
         email=email,
         telephone=telephone,
         niveau=None,
-        solde=0.0,
+        solde=solde,
         etat="actif",
         role="manager",
         responsable=None,
@@ -125,9 +126,12 @@ def add_manager():
 
 @users_bp.route('/add_admin', methods=['POST'])
 def add_admin():
+    from ..routes.visible_items import assign_all_visible_items_to_user  # ✅ Import helper
+
     nom = request.form.get('nom')
     email = request.form.get('email')
     telephone = request.form.get('telephone')
+    solde = request.form.get('solde')
     niveau = request.form.get('niveau', 'niveau2')
     password = "123456"
     photo_file = request.files.get('photo')
@@ -142,7 +146,7 @@ def add_admin():
         email=email,
         telephone=telephone,
         niveau=niveau,
-        solde=0.0,
+        solde=solde,
         etat="actif",
         role="admin",
         responsable=None,
@@ -156,13 +160,21 @@ def add_admin():
         new_admin.photo = save_user_photo(photo_file, new_admin.id)
 
     db.session.commit()
+
+    # ✅ Assign all visible items by default
+    assign_all_visible_items_to_user(new_admin.id)
+
     return jsonify(new_admin.to_dict()), 201
+
 
 @users_bp.route('/add_revendeur', methods=['POST'])
 def add_revendeur():
+    from ..routes.visible_items import assign_all_visible_items_to_user  # ✅ Import helper
+
     nom = request.form.get('nom')
     email = request.form.get('email')
     telephone = request.form.get('telephone')
+    solde = request.form.get('solde')
     admin_id = request.form.get('admin_id')
     niveau = request.form.get('niveau', 'niveau3')
     password = "123456"
@@ -182,7 +194,7 @@ def add_revendeur():
         email=email,
         telephone=telephone,
         niveau=niveau,
-        solde=0.0,
+        solde=solde,
         etat="actif",
         role="revendeur",
         responsable=admin_id,
@@ -196,63 +208,143 @@ def add_revendeur():
         new_revendeur.photo = save_user_photo(photo_file, new_revendeur.id)
 
     db.session.commit()
+
+    # ✅ Assign all visible items by default
+    assign_all_visible_items_to_user(new_revendeur.id)
+
     return jsonify(new_revendeur.to_dict()), 201
 
 # ===================== GET USERS ===================== #
 
 @users_bp.route('/get_admins', methods=['GET'])
+@jwt_required()
 def get_admins():
-    admins = User.query.filter_by(role="admin").all()
-    return jsonify([{
-        "id": admin.id,
-        "photo": admin.photo,
-        "nom": admin.nom,
-        "email": admin.email,
-        "telephone": admin.telephone,
-        "niveau": admin.niveau,
-        "role": admin.role,
-        "etat": admin.etat,
-        "solde": float(admin.solde)
-    } for admin in admins]), 200
+    current_user_id = get_jwt_identity()
+    current_user = User.query.get(current_user_id)
+
+    if not current_user or current_user.role != "manager":
+        return jsonify({"error": "Unauthorized. Only managers can access this endpoint."}), 403
+
+    search_query = request.args.get('search', '').strip().lower()
+    page = request.args.get('page', type=int)
+    per_page = request.args.get('per_page', type=int)
+
+    query = User.query.filter_by(role="admin")
+
+    if search_query:
+        query = query.filter(
+            db.or_(
+                User.nom.ilike(f"%{search_query}%"),
+                User.email.ilike(f"%{search_query}%"),
+                User.telephone.ilike(f"%{search_query}%")
+            )
+        )
+
+    # If no pagination parameters are provided, return all admins
+    if page is None and per_page is None:
+        admins = query.order_by(User.id.desc()).all()
+        return jsonify({
+            "page": 1,
+            "per_page": len(admins),
+            "total": len(admins),
+            "pages": 1,
+            "admins": [{
+                "id": admin.id,
+                "photo": admin.photo,
+                "nom": admin.nom,
+                "email": admin.email,
+                "telephone": admin.telephone,
+                "niveau": admin.niveau,
+                "role": admin.role,
+                "etat": admin.etat,
+                "solde": float(admin.solde)
+            } for admin in admins]
+        }), 200
+
+    # Apply pagination if parameters are provided
+    per_page = per_page or 20  # Default to 20 if per_page is not provided
+    page = page or 1  # Default to 1 if page is not provided
+    paginated = query.order_by(User.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
+    admins = paginated.items
+
+    return jsonify({
+        "page": page,
+        "per_page": per_page,
+        "total": paginated.total,
+        "pages": paginated.pages,
+        "admins": [{
+            "id": admin.id,
+            "photo": admin.photo,
+            "nom": admin.nom,
+            "email": admin.email,
+            "telephone": admin.telephone,
+            "niveau": admin.niveau,
+            "role": admin.role,
+            "etat": admin.etat,
+            "solde": float(admin.solde)
+        } for admin in admins]
+    }), 200
 
 @users_bp.route('/get_revendeurs', methods=['GET'])
 @jwt_required()
 def get_revendeurs():
     current_user_id = get_jwt_identity()
     current_user = User.query.get(current_user_id)
-    
+
     if not current_user:
         return jsonify({"error": "User not found"}), 404
-    
+
     if current_user.role not in ["manager", "admin"]:
         return jsonify({"error": "Unauthorized. Only managers and admins can access this endpoint."}), 403
 
-    revendeurs = []
+    search_query = request.args.get('search', '').strip().lower()
+    page = request.args.get('page', type=int, default=1)
+    per_page = 20
+
     if current_user.role == "manager":
-        revendeurs = User.query.filter_by(role="revendeur").all()
-    elif current_user.role == "admin":
-        def get_sub_revendeurs(admin_id):
-            sub_revendeurs = []
+        query = User.query.filter_by(role="revendeur")
+    else:
+        def get_sub_revendeur_ids(admin_id):
+            revendeur_ids = []
             direct_revendeurs = User.query.filter_by(responsable=admin_id, role="revendeur").all()
-            sub_revendeurs.extend(direct_revendeurs)
+            revendeur_ids += [r.id for r in direct_revendeurs]
             sub_admins = User.query.filter_by(responsable=admin_id, role="admin").all()
             for sub_admin in sub_admins:
-                sub_revendeurs.extend(get_sub_revendeurs(sub_admin.id))
-            return sub_revendeurs
-        
-        revendeurs = get_sub_revendeurs(current_user.id)
+                revendeur_ids += get_sub_revendeur_ids(sub_admin.id)
+            return revendeur_ids
 
-    return jsonify([{
-        "id": revendeur.id,
-        "photo": revendeur.photo,
-        "admin": User.query.get(revendeur.responsable).nom if revendeur.responsable else None,
-        "nom": revendeur.nom,
-        "email": revendeur.email,
-        "telephone": revendeur.telephone,
-        "role": revendeur.role,
-        "etat": revendeur.etat,
-        "solde": float(revendeur.solde)
-    } for revendeur in revendeurs]), 200
+        ids = get_sub_revendeur_ids(current_user.id)
+        query = User.query.filter(User.id.in_(ids))
+
+    if search_query:
+        query = query.filter(
+            db.or_(
+                User.nom.ilike(f"%{search_query}%"),
+                User.email.ilike(f"%{search_query}%"),
+                User.telephone.ilike(f"%{search_query}%")
+            )
+        )
+
+    paginated = query.order_by(User.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
+    revendeurs = paginated.items
+
+    return jsonify({
+        "page": page,
+        "per_page": per_page,
+        "total": paginated.total,
+        "pages": paginated.pages,
+        "revendeurs": [{
+            "id": r.id,
+            "photo": r.photo,
+            "admin": User.query.get(r.responsable).nom if r.responsable else None,
+            "nom": r.nom,
+            "email": r.email,
+            "telephone": r.telephone,
+            "role": r.role,
+            "etat": r.etat,
+            "solde": float(r.solde)
+        } for r in revendeurs]
+    }), 200
 
 # ===================== UPDATE USERS ===================== #
 
@@ -366,7 +458,7 @@ def login():
     if not user or not user.check_password(password):
         return jsonify({"error": "Invalid email or password"}), 401
 
-    access_token = create_access_token(identity=str(user.id), expires_delta=timedelta(hours=24))
+    access_token = create_access_token(identity=str(user.id), expires_delta=timedelta(hours=1))
     return jsonify({
         "message": "Login successful",
         "token": access_token,

@@ -54,8 +54,33 @@ def add_duree_avec_stock():
 # ===================== GET ALL ===================== #
 @duree_avec_stock_bp.route('/get_all', methods=['GET'])
 def get_all_duree_avec_stock():
-    records = DureeAvecStock.query.all()
-    return jsonify([record.to_dict() for record in records]), 200
+    page = request.args.get('page', type=int, default=1)
+    per_page = request.args.get('per_page', type=int, default=20)
+    search_query = request.args.get('search', type=str, default="").strip().lower()
+
+    query = DureeAvecStock.query
+
+    # Apply search filter only if search_query is provided
+    if search_query:
+        query = query.filter(
+            db.or_(
+                DureeAvecStock.fournisseur.ilike(f"%{search_query}%"),
+                DureeAvecStock.etat.ilike(f"%{search_query}%"),
+                db.cast(DureeAvecStock.note, db.String).ilike(f"%{search_query}%")
+            )
+        )
+
+    # Fetch all records if no parameters (except pagination) are provided
+    paginated = query.order_by(DureeAvecStock.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
+    results = paginated.items
+
+    return jsonify({
+        "page": page,
+        "per_page": per_page,
+        "total": paginated.total,
+        "pages": paginated.pages,
+        "records": [record.to_dict() for record in results]
+    }), 200
 
 # ===================== GET BY ID ===================== #
 @duree_avec_stock_bp.route('/get/<int:record_id>', methods=['GET'])

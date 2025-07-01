@@ -64,13 +64,56 @@ def add_category():
         "category": new_category.to_dict()
     }), 201
 
-
 @categories_bp.route('/get_category', methods=['GET'])
 def get_all_categories():
-    categories = Category.query.all()
-    result = [category.to_dict() for category in categories]
-    return jsonify(result)
+    """
+    Retrieve categories, sorted by ID descending, with optional pagination, filtering, and search.
+    Returns all categories if no parameters are provided.
+    """
+    try:
+        search_query = request.args.get('search', type=str, default="").strip().lower()
+        page = request.args.get('page', type=int, default=None)
+        limit = request.args.get('per_page', type=int, default=None)
+        filters = {
+            key: value for key, value in request.args.items()
+            if key not in ['search', 'page', 'per_page']
+        }
 
+        query = Category.query
+
+        # Apply filters (e.g., ?etat=actif)
+        for field, value in filters.items():
+            if hasattr(Category, field):
+                query = query.filter(getattr(Category, field).ilike(f"%{value}%"))
+
+        # Apply search on 'nom'
+        if search_query:
+            query = query.filter(Category.nom.ilike(f"%{search_query}%"))
+
+        # If no pagination parameters are provided, return all results
+        if page is None and limit is None:
+            categories = query.order_by(Category.id.desc()).all()
+            return jsonify({
+                "total": len(categories),
+                "categories": [category.to_dict() for category in categories]
+            }), 200
+
+        # Apply pagination if parameters are provided
+        limit = limit or 20  # Default to 20 if not specified
+        page = page or 1     # Default to 1 if not specified
+        paginated = query.order_by(Category.id.desc()).paginate(page=page, per_page=limit, error_out=False)
+        categories = paginated.items
+
+        return jsonify({
+            "page": page,
+            "per_page": limit,
+            "total": paginated.total,
+            "pages": paginated.pages,
+            "categories": [category.to_dict() for category in categories]
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
 @categories_bp.route('/get_category/<int:id>', methods=['GET'])
 def get_category_by_id(id):
     category = Category.query.get(id)

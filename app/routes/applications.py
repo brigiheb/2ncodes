@@ -53,17 +53,61 @@ def add_application():
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
 
-
 @applications_bp.route('/get_applications', methods=['GET'])
 def get_all_applications():
-    """Retrieve all applications."""
+    """
+    Retrieve applications with optional pagination, filtering, and search.
+    Returns all applications if no pagination parameters are provided.
+    """
     try:
-        applications = Application.query.all()
-        result = [app.to_dict() for app in applications]
-        return jsonify(result)
+        search_query = request.args.get('search', type=str, default="").strip().lower()
+        page = request.args.get('page', type=int, default=None)
+        per_page = request.args.get('per_page', type=int, default=None)
+        filters = {
+            key: value for key, value in request.args.items()
+            if key not in ['search', 'page', 'per_page']
+        }
+
+        query = Application.query
+
+        # Apply filters dynamically
+        for field, value in filters.items():
+            if hasattr(Application, field):
+                query = query.filter(getattr(Application, field).ilike(f"%{value}%"))
+
+        # Apply search on 'nom' and 'lien'
+        if search_query:
+            query = query.filter(
+                db.or_(
+                    Application.nom.ilike(f"%{search_query}%"),
+                    Application.lien.ilike(f"%{search_query}%")
+                )
+            )
+
+        # If no pagination parameters are provided, return all results
+        if page is None and per_page is None:
+            applications = query.order_by(Application.id.desc()).all()
+            return jsonify({
+                "total": len(applications),
+                "applications": [app.to_dict() for app in applications]
+            }), 200
+
+        # Apply pagination if parameters are provided
+        per_page = per_page or 20  # Default to 20 if not specified
+        page = page or 1           # Default to 1 if not specified
+        paginated = query.order_by(Application.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
+        applications = paginated.items
+
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": paginated.total,
+            "pages": paginated.pages,
+            "applications": [app.to_dict() for app in applications]
+        }), 200
+
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
-
 
 @applications_bp.route('/get_application/<int:id>', methods=['GET'])
 def get_application_by_id(id):
@@ -75,7 +119,6 @@ def get_application_by_id(id):
         return jsonify({"message": "Application not found"}), 404
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
-
 
 @applications_bp.route('/update_application/<int:id>', methods=['PUT'])
 def update_application(id):
@@ -121,18 +164,26 @@ def update_application(id):
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
 
-
 @applications_bp.route('/delete_application/<int:id>', methods=['DELETE'])
 def delete_application(id):
-    """Delete an application."""
+    """Delete an application and its associated logo if exists."""
     try:
         application = Application.query.get(id)
         if not application:
             return jsonify({"message": "Application not found"}), 404
 
+        # Delete associated logo if it exists
+        if application.logo:
+            logo_path = os.path.join(current_app.root_path, application.logo)
+            if os.path.isfile(logo_path):
+                try:
+                    os.remove(logo_path)
+                except Exception as e:
+                    print(f"[WARNING] Failed to delete logo: {e}")
+
         db.session.delete(application)
         db.session.commit()
-        return jsonify({"message": "Application deleted successfully"})
+        return jsonify({"message": "Application deleted successfully"}), 200
     except SQLAlchemyError as e:
         db.session.rollback()
         return jsonify({"error": "Database error", "details": str(e)}), 500

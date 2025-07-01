@@ -183,7 +183,6 @@ def create_demande_solde():
                 socketio.emit("update_en_cours_count", {"user_id": admin.id, "count": count}, room=sid)
 
     return jsonify(new_request.to_dict()), 201
-
 @demande_solde_bp.route('/get', methods=['GET'])
 @jwt_required()
 def get_all_demandes():
@@ -192,19 +191,40 @@ def get_all_demandes():
     if not user:
         return jsonify({"error": "User not found"}), 404
 
+    search_query = request.args.get('search', type=str, default="").strip().lower()
+    page = request.args.get('page', type=int, default=1)
+    per_page = 20
+
     if user.role == "manager":
-        demandes = DemandeSolde.query.join(User).filter(User.role == "admin") \
-            .order_by(DemandeSolde.date_demande.desc()).all()
+        query = DemandeSolde.query.join(User).filter(User.role == "admin")
     elif user.role == "admin":
-        demandes = DemandeSolde.query.join(User).filter(User.responsable == user.id) \
-            .order_by(DemandeSolde.date_demande.desc()).all()
+        query = DemandeSolde.query.join(User).filter(User.responsable == user.id)
     else:
         return jsonify({"error": "Unauthorized access"}), 403
 
-    return jsonify([
-        {**dem.to_dict(), "user_id": dem.envoyee_par}
-        for dem in demandes
-    ]), 200
+    if search_query:
+        query = query.filter(
+            db.or_(
+                db.cast(DemandeSolde.montant, db.String).ilike(f"%{search_query}%"),
+                DemandeSolde.etat.ilike(f"%{search_query}%"),
+                User.nom.ilike(f"%{search_query}%")
+            )
+        )
+
+    paginated = query.order_by(DemandeSolde.date_demande.desc()).paginate(page=page, per_page=per_page, error_out=False)
+    demandes = paginated.items
+
+    return jsonify({
+        "page": page,
+        "per_page": per_page,
+        "total": paginated.total,
+        "pages": paginated.pages,
+        "demandes": [
+            {**dem.to_dict(), "user_id": dem.envoyee_par}
+            for dem in demandes
+        ]
+    }), 200
+
 
 @demande_solde_bp.route('/update/<int:demande_id>', methods=['PUT'])
 @jwt_required()
