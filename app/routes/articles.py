@@ -11,32 +11,30 @@ articles_bp = Blueprint('articles', __name__, url_prefix='/articles')
 def get_all_articles():
     """
     Retrieve paginated articles, sorted by ID descending,
-    with optional filtering and search.
+    with optional filtering by etat and search.
     """
     try:
         search_query = request.args.get('search', type=str, default="").strip().lower()
         page = request.args.get('page', type=int, default=1)
-        per_page = request.args.get('per_page', type=int, default=20)  # Use query param
-
-        # Collect filters (exclude 'search', 'page', 'per_page')
-        filters = {
-            key: value for key, value in request.args.items()
-            if key not in ['search', 'page', 'per_page']
-        }
+        per_page = request.args.get('per_page', type=int, default=20)
+        etat = request.args.get('etat', type=str, default="").strip().lower()
 
         query = Article.query
 
-        # Apply filters
-        for field, value in filters.items():
-            if hasattr(Article, field):
-                query = query.filter(getattr(Article, field).like(f"%{value}%"))
+        # Apply etat filter
+        if etat in ['actif', 'inactif']:
+            query = query.filter(Article.etat == etat)
 
         # Apply search
         if search_query:
             query = query.filter(
                 db.or_(
+                    Boutique.nom.ilike(f"%{search_query}%"),
                     Article.nom.ilike(f"%{search_query}%"),
-                    Article.description.ilike(f"%{search_query}%")
+                    Article.description.ilike(f"%{search_query}%"),
+                    Article.prix_1.ilike(f"%{search_query}%"),
+                    Article.prix_2.ilike(f"%{search_query}%"),
+                    Article.prix_3.ilike(f"%{search_query}%"),
                 )
             )
 
@@ -54,6 +52,54 @@ def get_all_articles():
 
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
+    
+
+@articles_bp.route('/get_articles_by_category/<int:boutique_id>', methods=['GET'])
+def get_articles_by_category(boutique_id):
+    """
+    Retrieve paginated articles filtered by boutique_id, sorted by ID descending,
+    with optional filtering by etat and search.
+    """
+    try:
+        search_query = request.args.get('search', type=str, default="").strip().lower()
+        page = request.args.get('page', type=int, default=1)
+        per_page = request.args.get('per_page', type=int, default=20)
+        etat = request.args.get('etat', type=str, default="").strip().lower()
+
+        # Base query filtering by Article.boutique_id
+        query = Article.query.filter(Article.boutique_id == boutique_id)
+
+        # Apply etat filter
+        if etat in ['actif', 'inactif']:
+            query = query.filter(Article.etat == etat)
+
+        # Apply search
+        if search_query:
+            query = query.join(Boutique).filter(
+                db.or_(
+                    Boutique.nom.ilike(f"%{search_query}%"),
+                    Article.nom.ilike(f"%{search_query}%"),
+                    Article.description.ilike(f"%{search_query}%"),
+                    Article.prix_1.ilike(f"%{search_query}%"),
+                    Article.prix_2.ilike(f"%{search_query}%"),
+                    Article.prix_3.ilike(f"%{search_query}%"),
+                )
+            )
+
+        # Apply sorting and pagination
+        paginated = query.order_by(Article.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
+        articles = paginated.items
+
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": paginated.total,
+            "pages": paginated.pages,
+            "articles": [article.to_dict() for article in articles]
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500        
 
 @articles_bp.route('/get_article/<int:article_id>', methods=['GET'])
 def get_article(article_id):

@@ -41,7 +41,12 @@ def create_app():
     from app.models.transaction_paye import TransactionPaye
     from app.models.transaction_impaye import TransactionImpaye
     from app.models.visible_item import VisibleItem
-    from app.models.historique import Historique   # ✅ Add this line
+    from app.models.historique import Historique
+    from app.models.return_request import ReturnRequest
+    from app.models.panier import Panier  # ✅ NEW
+    from app.models.commande_boutique import CommandeBoutique   # ✅ NEW
+    from app.models.gest_prix import GestPrix   # ✅ NEW table import
+
 
     # Import routes
     from app.routes.categories import categories_bp
@@ -58,7 +63,18 @@ def create_app():
     from app.routes.gest_messages import gest_message_bp
     from app.routes.transaction import transactions_bp
     from app.routes.visible_items import visible_bp
-    # from app.routes.historique import historique_bp  # ✅ Uncomment once you create the routes
+    from app.routes.historique import historique_bp
+    from app.routes.statistics import statistics_bp
+    # (routes for panier will be added later)
+    from app.routes.commandes import commandes_bp
+    from app.routes.gest_prix import gest_prix_bp   # ✅ NEW route import
+    
+
+
+    
+    app.register_blueprint(commandes_bp, url_prefix='/api/commandes')
+
+    app.register_blueprint(gest_prix_bp, url_prefix='/api/gest_prix')
 
     # Register blueprints
     app.register_blueprint(gest_message_bp, url_prefix='/api/gest_message')
@@ -75,6 +91,7 @@ def create_app():
     app.register_blueprint(users_bp, url_prefix='/api/users')
     app.register_blueprint(transactions_bp, url_prefix='/api/transactions')
     app.register_blueprint(visible_bp, url_prefix='/api/visible_items')
-    # app.register_blueprint(historique_bp, url_prefix='/api/historique')  # ✅ Enable once route is ready
+    app.register_blueprint(historique_bp, url_prefix='/api/historique')
+    app.register_blueprint(statistics_bp, url_prefix='/api/statistics')
 
     return app

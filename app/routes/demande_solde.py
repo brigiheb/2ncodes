@@ -65,7 +65,7 @@ def socket_get_weekly_updates(data):
     )
 
 def get_en_cours_count(user):
-    if user.role == "manager":
+    if user.role in ["manager", "admin_boss"]:
         return DemandeSolde.query.join(User).filter(
             User.role == "admin",
             DemandeSolde.etat == "en cours"
@@ -195,7 +195,7 @@ def get_all_demandes():
     page = request.args.get('page', type=int, default=1)
     per_page = 20
 
-    if user.role == "manager":
+    if user.role in ["manager", "admin_boss"]:
         query = DemandeSolde.query.join(User).filter(User.role == "admin")
     elif user.role == "admin":
         query = DemandeSolde.query.join(User).filter(User.responsable == user.id)
@@ -247,7 +247,7 @@ def update_demande(demande_id):
     if not requester:
         return jsonify({"error": "Requester not found"}), 404
 
-    if approver.role == "manager" and requester.role != "admin":
+    if approver.role in ["manager", "admin_boss"] and requester.role != "admin":
         return jsonify({"error": "Unauthorized: Managers can only approve admin requests."}), 403
     if approver.role == "admin" and (requester.role != "revendeur" or requester.responsable != approver.id):
         return jsonify({"error": "Unauthorized: Admins can only approve their own revendeurs' requests."}), 403
@@ -262,7 +262,7 @@ def update_demande(demande_id):
         if approver.role == "admin" and requester.role == "revendeur":
             approver.solde -= demande.montant
             requester.solde += demande.montant
-        elif approver.role == "manager" and requester.role == "admin":
+        elif approver.role in ["manager", "admin_boss"] and requester.role == "admin":
             requester.solde += demande.montant
 
         tx_data = {
@@ -330,3 +330,36 @@ def update_demande(demande_id):
     print(f"Broadcasted updated_demande for demande {demande_id}")
 
     return jsonify(updated_data), 200
+
+@demande_solde_bp.route('/my_demandes', methods=['GET'])
+@jwt_required()
+def get_my_demandes():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    page = request.args.get('page', type=int, default=1)
+    per_page = request.args.get('per_page', type=int, default=5)
+
+    # Fetch DemandeSolde records for the user, ordered by date_demande desc
+    demandes = DemandeSolde.query.filter(
+        DemandeSolde.envoyee_par == user_id
+    ).order_by(db.desc(DemandeSolde.date_demande)).paginate(page=page, per_page=per_page, error_out=False)
+
+    return jsonify({
+        "page": page,
+        "per_page": per_page,
+        "total": demandes.total,
+        "pages": demandes.pages,
+        "demandes": [
+            {
+                "id": dem.id,
+                "montant": float(dem.montant),
+                "date_demande": dem.date_demande.isoformat(),
+                "etat": dem.etat,
+                "preuve": dem.preuve if dem.preuve else None
+            }
+            for dem in demandes.items
+        ]
+    }), 200

@@ -3,10 +3,23 @@ import os
 from flask import Blueprint, request, jsonify, current_app
 from werkzeug.utils import secure_filename
 from ..models.application import Application
+from ..models.user import User
+from ..models.visible_item import VisibleItem, ItemType
 from .. import db
 from sqlalchemy.exc import SQLAlchemyError
 
 applications_bp = Blueprint('applications', __name__)
+
+def add_application_to_all_users_visible_items(application_id):
+    users = User.query.all()
+    for user in users:
+        visible_item = VisibleItem(
+            user_id=user.id,
+            item_id=application_id,
+            item_type=ItemType.application
+        )
+        db.session.add(visible_item)
+    db.session.commit()
 
 @applications_bp.route('/add_application', methods=['POST'])
 def add_application():
@@ -42,6 +55,10 @@ def add_application():
             new_application.logo = os.path.relpath(save_path, current_app.root_path)
 
         db.session.commit()
+
+        # Add the new application to all users' visible items
+        add_application_to_all_users_visible_items(new_application.id)
+        print(f"[SUCCESS] Added application {new_application.id} to all users' visible items")
 
         return jsonify({
             "message": "Application added successfully",

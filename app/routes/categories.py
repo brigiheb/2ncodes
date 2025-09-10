@@ -1,13 +1,27 @@
 # -*- coding: utf-8 -*-
-# -*- coding: utf-8 -*-
 from flask import Blueprint, request, jsonify, current_app
 from ..models.category import Category
+from ..models.user import User
+from ..models.visible_item import VisibleItem, ItemType
 from .. import db
 from werkzeug.utils import secure_filename
 from datetime import datetime
 import os 
+from ..models.product import Produit  # make sure this import is correct
+
 
 categories_bp = Blueprint('categories', __name__)
+
+def add_category_to_all_users_visible_items(category_id):
+    users = User.query.all()
+    for user in users:
+        visible_item = VisibleItem(
+            user_id=user.id,
+            item_id=category_id,
+            item_type=ItemType.category
+        )
+        db.session.add(visible_item)
+    db.session.commit()
 
 @categories_bp.route('/add_category', methods=['POST'])
 def add_category():
@@ -31,7 +45,6 @@ def add_category():
 
     img_path = None
     if photo_file and photo_file.filename:
-        # Format folder path
         folder = os.path.join(
             current_app.root_path,
             'static',
@@ -45,12 +58,10 @@ def add_category():
         save_path = os.path.join(folder, filename)
         print(f"[DEBUG] Final save path: {save_path}")
 
-        # Remove previous image if exists
         if os.path.exists(save_path):
             print(f"[INFO] Existing file found. Removing: {save_path}")
             os.remove(save_path)
 
-        # Save new image
         photo_file.save(save_path)
         img_path = os.path.relpath(save_path, current_app.root_path)
         print(f"[DEBUG] Image saved at: {img_path}")
@@ -59,10 +70,15 @@ def add_category():
     db.session.commit()
     print(f"[SUCCESS] Category added and committed with ID: {new_category.id}")
 
+    # Add the new category to all users' visible items
+    add_category_to_all_users_visible_items(new_category.id)
+    print(f"[SUCCESS] Added category {new_category.id} to all users' visible items")
+
     return jsonify({
         "message": "Category added successfully",
         "category": new_category.to_dict()
     }), 201
+
 
 @categories_bp.route('/get_category', methods=['GET'])
 def get_all_categories():
@@ -158,6 +174,7 @@ def update_category(id):
 
 
 
+
 @categories_bp.route('/delete_category/<int:id>', methods=['DELETE'])
 def delete_category(id):
     print(f"[DEBUG] Attempting to delete category with ID: {id}")
@@ -182,7 +199,22 @@ def delete_category(id):
     else:
         print("[INFO] No image associated with this category.")
 
-    # Delete the category and commit
+    # Delete all products associated with the category
+    try:
+        products = Produit.query.filter_by(category_id=id).all()
+        print(f"[DEBUG] Found {len(products)} products with category_id {id}")
+        for product in products:
+            db.session.delete(product)
+        print(f"[SUCCESS] Deleted {len(products)} products associated with category_id {id}")
+    except Exception as e:
+        db.session.rollback()
+        print(f"[ERROR] Failed to delete products: {e}")
+        return jsonify({
+            "error": "Failed to delete associated products",
+            "details": str(e)
+        }), 500
+
+    # Delete the category
     try:
         db.session.delete(category)
         db.session.commit()
@@ -195,4 +227,3 @@ def delete_category(id):
             "error": "Failed to delete category",
             "details": str(e)
         }), 500
-

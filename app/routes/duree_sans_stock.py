@@ -4,42 +4,51 @@ from .. import db
 from ..models.duree_sans_stock import DureeSansStock
 from ..models.product import Produit
 from datetime import datetime
+from sqlalchemy import func, cast, String, or_
 
 duree_sans_stock_bp = Blueprint('duree_sans_stock', __name__)
 
 @duree_sans_stock_bp.route('/get_dureeSansStock', methods=['GET'])
 def get_all_duree_sans_stock():
-    """Get all duree_sans_stock entries with pagination and optional etat filter."""
+    """Get all duree_sans_stock entries with pagination, filters, and search."""
     try:
-        search_query = request.args.get('search', type=str, default=None)
-        etat = request.args.get('etat', type=str, default=None)
         page = request.args.get('page', type=int, default=1)
         per_page = request.args.get('per_page', type=int, default=20)
+        search_query = request.args.get('search', type=str, default="").strip().lower()
+        produit_id = request.args.get('produit_id', type=int, default=None)
+        duree = request.args.get('duree', type=str, default="").strip().lower()
+        etat = request.args.get('etat', type=str, default="").strip().lower()
+        fournisseur = request.args.get('fournisseur', type=str, default="").strip().lower()
 
         query = DureeSansStock.query.join(Produit, DureeSansStock.produit_id == Produit.id)
 
-        # Apply search filter only if search_query is provided
-        if search_query and search_query.strip():
-            search_query = search_query.strip().lower()
+        if search_query:
             query = query.filter(
-                db.or_(
-                    Produit.name.ilike(f"%{search_query}%"),  # Filter on Produit's name
-                    DureeSansStock.fournisseur.ilike(f"%{search_query}%"),
-                    DureeSansStock.etat.ilike(f"%{search_query}%"),
+                or_(
+                    Produit.name.ilike(f"%{search_query}%"),
                     DureeSansStock.duree.ilike(f"%{search_query}%"),
-                    db.cast(DureeSansStock.note, db.String).ilike(f"%{search_query}%")
+                    DureeSansStock.fournisseur.ilike(f"%{search_query}%"),
+                    cast(DureeSansStock.prix_1, String).ilike(f"%{search_query}%"),
+                    cast(DureeSansStock.prix_2, String).ilike(f"%{search_query}%"),
+                    cast(DureeSansStock.prix_3, String).ilike(f"%{search_query}%"),
+                    cast(DureeSansStock.note, String).ilike(f"%{search_query}%"),
+                    DureeSansStock.etat.ilike(f"%{search_query}%"),
+                    cast(DureeSansStock.date_ajout, String).ilike(f"%{search_query}%")
                 )
             )
 
-        # Apply etat filter only if etat is provided
-        if etat and etat.strip():
-            etat = etat.strip().lower()
-            query = query.filter(DureeSansStock.etat == etat)
+        if produit_id is not None:
+            query = query.filter(DureeSansStock.produit_id == produit_id)
+        if duree:
+            query = query.filter(func.lower(func.trim(DureeSansStock.duree)) == duree)
+        if etat:
+            query = query.filter(DureeSansStock.etat.ilike(etat))
+        if fournisseur:
+            query = query.filter(func.lower(func.trim(DureeSansStock.fournisseur)) == fournisseur)
 
-        # Apply pagination
         paginated = query.order_by(DureeSansStock.id.desc()).paginate(
-            page=page, 
-            per_page=per_page, 
+            page=page,
+            per_page=per_page,
             error_out=False
         )
         results = paginated.items
@@ -53,6 +62,7 @@ def get_all_duree_sans_stock():
         }), 200
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
+
 
 @duree_sans_stock_bp.route('/get_dureeSansStock/<int:record_id>', methods=['GET'])
 def get_duree_sans_stock(record_id):
@@ -136,3 +146,39 @@ def delete_duree_sans_stock(record_id):
     db.session.commit()
 
     return jsonify({"message": f"Record with id {record_id} has been deleted"}), 200
+
+@duree_sans_stock_bp.route('/get_filter_options', methods=['GET'])
+def get_filter_options():
+    """Fetch unique produit names with IDs, duree, and fournisseur values for filtering."""
+    try:
+        produits = (
+            db.session.query(Produit.id, Produit.name.label('produit_name'))
+            .join(DureeSansStock, DureeSansStock.produit_id == Produit.id)
+            .distinct()
+            .order_by(Produit.name.asc())
+            .all()
+        )
+
+        durees = (
+            db.session.query(func.lower(func.trim(DureeSansStock.duree)).label('duree'))
+            .distinct()
+            .order_by(func.lower(func.trim(DureeSansStock.duree)).asc())
+            .all()
+        )
+
+        fournisseurs = (
+            db.session.query(func.lower(func.trim(DureeSansStock.fournisseur)).label('fournisseur'))
+            .distinct()
+            .order_by(func.lower(func.trim(DureeSansStock.fournisseur)).asc())
+            .all()
+        )
+
+        response = {
+            "produits": [{"id": p.id, "produit_name": p.produit_name} for p in produits],
+            "durees": [d.duree for d in durees if d.duree],
+            "fournisseurs": [f.fournisseur for f in fournisseurs if f.fournisseur]
+        }
+
+        return jsonify(response), 200
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch filter options", "details": str(e)}), 500

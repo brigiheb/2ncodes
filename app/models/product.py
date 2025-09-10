@@ -12,9 +12,14 @@ class Produit(db.Model):
     category_id = db.Column(db.Integer, db.ForeignKey('categories.id'), nullable=False)
     sous_category_id = db.Column(db.Integer, db.ForeignKey('sous_categories.id'), nullable=True)
     etat = db.Column(db.Enum('actif', 'inactif'), nullable=False, default='actif')
+    type = db.Column(db.Enum(
+        'code', 'Netflix/Shahed', 'Smart App', 'Lien M3U', 
+        'Panel Serveur', 'Add Package', 'Renew Package', 
+        name='type_enum'
+    ), nullable=False)
     affichage = db.Column(db.Integer, nullable=True)
-    etat_commande = db.Column(db.Enum('instantan\u00e9', 'sur commande'), nullable=False, default='instantan\u00e9')
-
+    etat_commande = db.Column(db.Enum('instantané', 'sur commande'), nullable=False, default='instantané')
+    add_status = db.Column(db.Enum('confirmé', 'annulé', 'en cours'), nullable=False, default='confirmé')
 
     category = db.relationship('Category', backref=db.backref('produits', lazy=True))
     sous_category = db.relationship('SousCategory', backref=db.backref('produits', lazy=True))
@@ -28,6 +33,8 @@ class Produit(db.Model):
             "category_nom": self.category.nom if self.category else None,
             "sous_category_name": self.sous_category.name if self.sous_category else None,
             "etat": self.etat,
+            "type": self.type,
             "affichage": self.affichage,
-            "etat_commande": self.etat_commande
+            "etat_commande": self.etat_commande,
+            "add_status": self.add_status
         }

@@ -11,6 +11,7 @@ class TransactionImpaye(db.Model):
     montant = db.Column(db.Float, nullable=False)
     date_transaction = db.Column(db.DateTime, default=datetime.utcnow)
     etat = db.Column(db.Enum('impaye', name='etat_impaye'), default='impaye', nullable=False)
+    duree = db.Column(db.String(20), nullable=False)  # Added duree column, non-nullable
 
     sender = db.relationship('User', foreign_keys=[envoyee_par], backref=db.backref('transactions_impaye_envoyees', lazy=True))
     receiver = db.relationship('User', foreign_keys=[recue_par], backref=db.backref('transactions_impaye_recues', lazy=True))
@@ -20,7 +21,9 @@ class TransactionImpaye(db.Model):
             "id": self.id,
             "envoyee_par": self.sender.nom if self.sender else None,
             "recue_par": self.receiver.nom if self.receiver else None,
+            "recue_par_id": self.recue_par,
             "montant": self.montant,
-            "date_transaction": self.date_transaction.strftime('%Y-%m-%d %H:%M:%S'),
-            "etat": self.etat
+            "date_transaction": self.date_transaction.strftime('%Y-%m-%d %H:%M:%S') if self.date_transaction else None,
+            "etat": self.etat,
+            "duree": self.duree  # Include duree in the response
         }

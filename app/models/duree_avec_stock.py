@@ -10,7 +10,6 @@ class DureeAvecStock(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     produit_id = db.Column(db.Integer, db.ForeignKey('produits.id'), nullable=False)
     duree = db.Column(db.String(50), nullable=False)
-    fournisseur = db.Column(db.String(255), nullable=False)
     
     moyenne = db.Column(db.Float, nullable=True)  # Weighted average
 
@@ -56,7 +55,6 @@ class DureeAvecStock(db.Model):
             "id": self.id,
             "produit_name": self.produit.name if self.produit else None,
             "duree": self.duree,
-            "fournisseur": self.fournisseur,
             "moyenne": round(self.moyenne, 2) if self.moyenne is not None else None,
             "prix_1": self.prix_1,
             "prix_2": self.prix_2,

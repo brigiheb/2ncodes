@@ -1,14 +1,24 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, jsonify, request, current_app
 from werkzeug.utils import secure_filename
-
 from .. import db
 from ..models.boutique import Boutique
+from ..models.user import User
+from ..models.visible_item import VisibleItem, ItemType
 import os
-
 
 boutiques_bp = Blueprint('boutiques', __name__, url_prefix='/boutiques')
 
+def add_boutique_to_all_users_visible_items(boutique_id):
+    users = User.query.all()
+    for user in users:
+        visible_item = VisibleItem(
+            user_id=user.id,
+            item_id=boutique_id,
+            item_type=ItemType.boutique
+        )
+        db.session.add(visible_item)
+    db.session.commit()
 
 @boutiques_bp.route('/get_boutiques', methods=['GET'])
 def get_all_boutiques():
@@ -21,7 +31,6 @@ def get_all_boutiques():
         page = request.args.get('page', type=int, default=None)
         per_page = request.args.get('per_page', type=int, default=None)
 
-        # Collect filters (excluding 'search', 'page', and 'per_page')
         filters = {
             key: value for key, value in request.args.items()
             if key not in ['search', 'page', 'per_page']
@@ -29,32 +38,27 @@ def get_all_boutiques():
 
         query = Boutique.query
 
-        # Apply filters
         for field, value in filters.items():
             if hasattr(Boutique, field):
                 query = query.filter(getattr(Boutique, field).like(f"%{value}%"))
 
-        # Apply search (on nom)
         if search_query:
             query = query.filter(
                 Boutique.nom.ilike(f"%{search_query}%")
             )
 
-        # Apply descending sort
         query = query.order_by(Boutique.id.desc())
 
-        # If page or per_page is not provided, return all boutiques
         if page is None or per_page is None:
             boutiques = query.all()
             return jsonify({
-                "page": 1,  # Default for non-paginated response
-                "per_page": len(boutiques),  # Total count for non-paginated
+                "page": 1,
+                "per_page": len(boutiques),
                 "total": len(boutiques),
                 "pages": 1,
                 "boutiques": [boutique.to_dict() for boutique in boutiques]
             }), 200
 
-        # Apply pagination
         paginated = query.paginate(page=page, per_page=per_page, error_out=False)
         boutiques = paginated.items
 
@@ -76,7 +80,6 @@ def get_boutique(boutique_id):
     if not boutique:
         return jsonify({"error": f"Boutique with id {boutique_id} not found"}), 404
     return jsonify(boutique.to_dict()), 200
-
 
 @boutiques_bp.route('/add_boutique', methods=['POST'])
 def add_boutique():
@@ -114,6 +117,11 @@ def add_boutique():
         new_boutique.photo = relative_path
 
     db.session.commit()
+
+    # Add the new boutique to all users' visible items
+    add_boutique_to_all_users_visible_items(new_boutique.id)
+    print(f"[SUCCESS] Added boutique {new_boutique.id} to all users' visible items")
+
     return jsonify(new_boutique.to_dict()), 201
 
 @boutiques_bp.route('/put_boutique/<int:boutique_id>', methods=['PUT'])
@@ -147,8 +155,6 @@ def update_boutique(boutique_id):
 
     db.session.commit()
     return jsonify(boutique.to_dict()), 200
-
-
 
 @boutiques_bp.route('/delete_boutique/<int:boutique_id>', methods=['DELETE'])
 def delete_boutique(boutique_id):

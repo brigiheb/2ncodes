@@ -22,9 +22,10 @@ class TransactionPaye(db.Model):
             "id": self.id,
             "envoyee_par": self.sender.nom if self.sender else None,
             "recue_par": self.receiver.nom if self.receiver else None,
+            "recue_par_id": self.recue_par,  # Add recue_par_id
             "montant": self.montant,
             "preuve": self.preuve,
-            "date_transaction": self.date_transaction.strftime('%Y-%m-%d %H:%M:%S'),
-            "date_paiement": self.date_paiement.strftime('%Y-%m-%d %H:%M:%S'),
+            "date_transaction": self.date_transaction.strftime('%Y-%m-%d %H:%M:%S') if self.date_transaction else None,
+            "date_paiement": self.date_paiement.strftime('%Y-%m-%d %H:%M:%S') if self.date_paiement else None,
             "etat": self.etat
         }
