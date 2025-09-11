@@ -46,6 +46,8 @@ def create_app():
     from app.models.panier import Panier  # ✅ NEW
     from app.models.commande_boutique import CommandeBoutique   # ✅ NEW
     from app.models.gest_prix import GestPrix   # ✅ NEW table import
+    from app.models.commande_produit import CommandeProduit   # ✅ NEW
+
 
 
     # Import routes
@@ -68,7 +70,10 @@ def create_app():
     # (routes for panier will be added later)
     from app.routes.commandes import commandes_bp
     from app.routes.gest_prix import gest_prix_bp   # ✅ NEW route import
+
+    from app.routes.commande_produit import commande_produit_bp   # ✅ NEW route import
     
+    app.register_blueprint(commande_produit_bp, url_prefix='/api/commande_produit')  # ✅ NEW
 
 
     

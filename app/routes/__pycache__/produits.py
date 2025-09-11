@@ -159,6 +159,8 @@ def get_all_products():
     except Exception as e:
         print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
+    
+
 
 def _normalize(s: str) -> str:
     return (s or "").strip().lower()
@@ -346,6 +348,8 @@ def get_products_by_sous_category(sous_category_id):
     except Exception as e:
         print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
+
+
 
 @products_bp.route('/update_product/<int:id>', methods=['PUT'])
 def update_product(id):

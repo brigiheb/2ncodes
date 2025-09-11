@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from .. import db
@@ -7,13 +8,25 @@ from ..models.product import Produit
 from ..models.stock import Stock
 from ..models.duree_avec_stock import DureeAvecStock
 from ..models.historique import Historique
-from sqlalchemy.sql import func
-from ..routes.users import emit_user_updated  
 from ..models.return_request import ReturnRequest
-
+from ..routes.users import emit_user_updated
+from sqlalchemy.sql import func
+# NEW: use GestPrix for revendeur pricing
+from ..models.gest_prix import GestPrix
 
 historique_bp = Blueprint('historique', __name__, url_prefix='/api/historique')
 
+# --- helpers for pricing ---
+def _normalize(s: str) -> str:
+    return (s or "").strip().lower()
+
+def _prix_achat_for_admin_niveau(das: DureeAvecStock, admin: User) -> float:
+    niveau = (admin.niveau or 'niveau1').lower()
+    if niveau == 'niveau2':
+        return float(das.prix_2)
+    if niveau == 'niveau3':
+        return float(das.prix_3)
+    return float(das.prix_1)
 
 @historique_bp.route('/acheter', methods=['POST'])
 @jwt_required()
@@ -27,10 +40,10 @@ def acheter_produit():
     if user.role not in ["admin", "revendeur"]:
         return jsonify({"error": "Seuls les admins et revendeurs peuvent acheter des produits"}), 403
 
-    data = request.get_json()
+    data = request.get_json() or {}
     produit_id = data.get("produit_id")
     quantite = data.get("quantite")
-    duree = data.get("duree")
+    duree = (data.get("duree") or "").strip()
     note = data.get("note", "")
 
     if not produit_id or not quantite or not duree:
@@ -49,25 +62,54 @@ def acheter_produit():
         return jsonify({"error": "Entrée DureeAvecStock non trouvée pour cette durée"}), 404
 
     # Check if DureeAvecStock quantite is sufficient
-    if duree_entry.quantite < quantite:
+    if (duree_entry.quantite or 0) < quantite:
         return jsonify({"error": f"Quantité insuffisante dans DureeAvecStock ({duree_entry.quantite} disponible)"}), 400
 
     # Fetch matching stock codes
-    matching_codes = Stock.query.filter_by(produit_id=produit_id, duree=duree).limit(quantite).all()
+    matching_codes = (
+        Stock.query
+        .filter_by(produit_id=produit_id, duree=duree)
+        .limit(quantite)
+        .all()
+    )
     if len(matching_codes) < quantite:
         return jsonify({"error": f"Stock insuffisant ({len(matching_codes)} codes disponibles)"}), 400
 
-    # Select price based on user niveau
-    prix_unitaire = 0
-    if user.niveau == "niveau1":
-        prix_unitaire = duree_entry.prix_1
-    elif user.niveau == "niveau2":
-        prix_unitaire = duree_entry.prix_2
+    # ---------- PRICE SELECTION ----------
+    if user.role == "admin":
+        # Admin buys at their niveau price from DAS
+        prix_unitaire = _prix_achat_for_admin_niveau(duree_entry, user)
     else:
-        prix_unitaire = duree_entry.prix_3
+        # Revendeur: use their responsible admin's pricing
+        if not user.responsable:
+            return jsonify({"error": "Revendeur sans admin responsable"}), 400
+        resp_admin = User.query.get(user.responsable)
+        if not resp_admin or resp_admin.role != "admin":
+            return jsonify({"error": "Admin responsable introuvable ou invalide"}), 400
 
-    total = prix_unitaire * quantite
-    if user.solde < total:
+        # Try GestPrix by (produit_name, duree) defined by the responsible admin.
+        # NOTE: GestPrix rows are global snapshots keyed by produit_name + duree in your design,
+        # so we just match by name+duree (case-insensitive).
+        key_prod = _normalize(produit.name)
+        key_dur = _normalize(duree)
+        gp = (
+            GestPrix.query
+            .filter(func.lower(func.trim(GestPrix.produit_name)) == key_prod)
+            .filter(func.lower(func.trim(GestPrix.duree)) == key_dur)
+            .first()
+        )
+
+        if gp and gp.prix_vente and float(gp.prix_vente) > 0:
+            prix_unitaire = float(gp.prix_vente)
+        elif gp and gp.prix_achat is not None:
+            # fallback to admin's purchase snapshot if no prix_vente set
+            prix_unitaire = float(gp.prix_achat)
+        else:
+            # final fallback: admin-level price from DureeAvecStock by admin niveau
+            prix_unitaire = _prix_achat_for_admin_niveau(duree_entry, resp_admin)
+
+    total = float(prix_unitaire) * quantite
+    if float(user.solde) < total:
         return jsonify({"error": f"Solde insuffisant ({user.solde} TND disponible)"}), 400
 
     # Extract codes
@@ -80,10 +122,10 @@ def acheter_produit():
             db.session.delete(s)
 
         # Update quantite in DureeAvecStock by subtracting purchased quantity
-        duree_entry.quantite -= quantite
+        duree_entry.quantite = (duree_entry.quantite or 0) - quantite
 
         # Deduct solde
-        user.solde -= total
+        user.solde = float(user.solde) - total
 
         # Save historique
         historique = Historique(
@@ -106,6 +148,7 @@ def acheter_produit():
             "quantite": quantite,
             "duree": duree,
             "codes": codes_list,
+            "prix_unitaire": float(prix_unitaire),
             "montant": float(total),
             "new_solde": float(user.solde)
         }), 200
@@ -113,6 +156,10 @@ def acheter_produit():
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": f"Erreur lors de l'achat: {str(e)}"}), 500
+
+# --- the rest of your routes remain unchanged below ---
+# (get, get_my_history, get_filter_options, get_revendeurs, returns/approve, returns/reject)
+
 
 @historique_bp.route('/get', methods=['GET'])
 @jwt_required()
